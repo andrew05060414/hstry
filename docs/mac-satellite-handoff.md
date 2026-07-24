@@ -119,7 +119,7 @@ hstry stats                   # 本机 staging 有数据
 hstry search "test" --scope remote --remote nas --limit 3
 ```
 
-在 NAS 上应能看到 `macbook:cursor-*` 等 source：
+在 NAS 上应能看到 `macbook:cursor-*` 等 source（`sync.device_id` 作为 push 前缀；旧版误用 `local:` 需在该 Mac 上重推一次）。
 
 ```bash
 ssh admin@memini-b506.tail76a98f.ts.net hstry stats

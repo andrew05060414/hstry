@@ -31,7 +31,7 @@ Win / Mac（satellite）                飞牛 NAS（hub）
 | `NAS_ROOT`           | `/vol1/1000/Code/hstry backup`                  | 含空格，命令需加引号         |
 | `NAS_DB`             | `/vol1/1000/Code/hstry backup/hstry.db`         | Hub 主库                     |
 | `REMOTE_NAME`        | `nas`                                           | Win/Mac remote 固定名        |
-| `WIN_DEVICE_ID`      | `win-pc`                                        | Windows satellite 标识       |
+| `WIN_DEVICE_ID`      | `arknights`                                     | Windows satellite 标识（`sync.device_id`） |
 | `MAC_DEVICE_ID`      | `macbook`                                       | Mac satellite 标识           |
 | `WIN_STAGING_DB`     | `D:/Data/hstry/staging.db`                        | Windows 暂存库               |
 | `MAC_STAGING_DB`     | `~/.local/share/hstry/staging.db`               | Mac 暂存库                   |
@@ -167,7 +167,7 @@ enabled = true
 
 [sync]
 mode = "satellite"
-device_id = "WIN_DEVICE_ID"
+device_id = "WIN_DEVICE_ID"   # push 前缀：arknights / macbook-pro 等，勿用 local
 hub_remote = "nas"
 auto_sync = true
 auto_sync_interval_secs = 300
@@ -200,9 +200,19 @@ hstry source list
 New-Item -ItemType Directory -Force (Split-Path "WIN_STAGING_DB")
 hstry service start
 hstry sync                              # 采本机数据到 staging
+
+# 推送前：Cursor 多 source 去重（先 dedup 再 prune）
+hstry dedup --cross-source --dry-run
+hstry dedup --cross-source
+hstry source prune-cursor --dry-run
+hstry source prune-cursor --auto-remove
+hstry source cleanup --auto-remove      # 同路径重复注册（如 cursaves 双份）
+
 hstry remote test nas
-hstry remote sync --remote nas --direction push
+hstry remote sync --remote nas --direction push -v
 ```
+
+推送后 NAS 上 source 前缀为 **`{device_id}:`**（如 `arknights:cursor-…`、`macbook:cursor-…`），不再是 `local:`。
 
 ### 2.5 日常搜索（问 NAS，不依赖本地全量）
 
@@ -313,7 +323,7 @@ LIMIT=50 MODE=quick /path/to/hstry/scripts/test-mmry-session-ingest.sh
 
 | 字段                   | 含义                 | 示例                                |
 | ---------------------- | -------------------- | ----------------------------------- |
-| `source_id`            | 数据源（含机器前缀） | `win-pc:cursor-0eb5ac86`            |
+| `source_id`            | 数据源（含机器前缀） | `arknights:cursor-0eb5ac86`         |
 | `adapter`              | 工具类型             | `cursor`, `codex`, `pi`, `opencode` |
 | `workspace`            | 项目路径             | `D:\Code\hstry` / `~/Code/hstry`    |
 | `external_id`          | 原工具会话 ID        | Cursor composer UUID                |
@@ -340,19 +350,31 @@ hstry list --source codex-e50f7c87
 | Claude Code                | `claude-code` | `~\.claude\projects`                  | ✅      |
 | OpenCode                   | `opencode`    | `~\.local\share\opencode`             | ✅      |
 | Pi                         | `pi`          | `~\.pi\agent\sessions`                | ✅      |
-| Goose / Hermes / Aider / … | 各 adapter    | 见 `hstry adapters list`              | ✅      |
+| QClaw / OpenClaw           | `qclaw`       | `~\.qclaw\agents`                     | ✅ 已 sync（本机 98 会话） |
+| WorkBuddy                  | `workbuddy`   | `~\.workbuddy\projects`               | ✅ 已 sync（本机 36 会话；v1 跳过 subagents） |
+| Antigravity (Gemini CLI)   | `antigravity` | `~\.gemini\tmp`                       | ✅ CLI-only（本机 8 有对话会话 / 21 jsonl 文件） |
+| Goose / Hermes / Aider / … | 各 adapter    | 见 `hstry adapters list`              | ✅ 有 adapter；本机 Hermes 会话目录目前为空 |
+| Gemini Export              | `gemini`      | Downloads/Desktop 导出 JSON           | ✅ adapter 只认 **导出文件**，不认 `~\.gemini\history` CLI 目录 |
 
 > 你说的 **Pay** 如果指 **Pi**，已支持。OpenCode 也已支持。
 
-### 尚未内置（可后续加 adapter）
+### Adapter backlog（本机 2026-07-25 探测）
 
-| 工具          | 说明          | 可行路径                                                              |
-| ------------- | ------------- | --------------------------------------------------------------------- |
-| **Zcode**     | 暂无 adapter  | 需调研数据目录与格式，仿 opencode/cursor 写 `adapters/zcode/`         |
-| **qclaw**     | OpenCode fork | 先试 `hstry import <path> --adapter opencode`；若目录结构相同可直接用 |
-| **workbuddy** | 独立格式      | 需样本数据 + 新 adapter                                               |
+按「有没有现成 adapter / 本机有没有数据 / 格式难度」排期。加完后：`just update-adapters` → `hstry source add <path>` → `hstry sync`。
 
-加新 adapter 后：`just update-adapters` → 各机器 `npm install` → `hstry source add <path>`。
+详细今晚执行计划见 [`plan-adapters-tonight.md`](./plan-adapters-tonight.md)（含 vs Cursor 难度、测试矩阵）。
+
+| 优先级 | 工具 | Adapter 现状 | 本机数据 | 建议路径 / 格式线索 | vs Cursor | 备注 |
+| ------ | ---- | ------------ | -------- | ------------------- | --------- | ---- |
+| ~~P0 今晚~~ **done** | **qclaw** | ✅ `adapters/qclaw` | ✅ ~98 jsonl | `~\.qclaw\agents\*\sessions\*.jsonl` | **≪** | 2026-07-25 sync：98 会话 / 4144 消息 |
+| ~~P0 今晚~~ **done** | **workbuddy** | ✅ `adapters/workbuddy` | ✅ ~36 jsonl | `~\.workbuddy\projects\**\*.jsonl` | **<** | 2026-07-25 sync：36 会话；v1 跳过 subagents |
+| ~~P0 今晚~~ **done** | **antigravity** | ✅ `adapters/antigravity` CLI | ✅ 21 jsonl | `~\.gemini\tmp\*\chats\session-*.jsonl` | **<** | 2026-07-25 sync：8 有对话会话（其余为 CLI 日志-only）；IDE ChatSessionStore 仍空 |
+| P2 延后 | **zcode** | 无 | ✅ 弱/乱 | `tasks-index` 元数据 + `cli/rollout/model-io-*.jsonl` + `cli/db/db.sqlite` | **≈/?** | transcript 未闭合；今晚不做 |
+| — | **hermes** | ✅ | ❌ 空 | `~\.hermes\sessions` | — | 有 adapter 无数据 |
+| — | **gemini** | Export only | 忽略 | — | — | 用户确认不做 |
+| — | **opencode** | ✅ | ✅ | `~\.local\share\opencode` | — | 已 sync |
+
+**不要做的捷径：** 把 qclaw 硬塞进 `pi` 的 canonical root；用 `opencode` 去 import `~\.qclaw`；把 Antigravity IDE protobuf 硬解码塞进 v1。
 
 ---
 
