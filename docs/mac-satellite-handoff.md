@@ -42,6 +42,9 @@ cd ~/.config/hstry/adapters && npm install
 
 ## Phase 3：配置 `~/.config/hstry/config.toml`
 
+> **Mac 与 Windows 一样**：`[[remotes]]` 里必须写 Hub 主库绝对路径，否则会 push 到 NAS 默认的 `~/.local/share/hstry/hstry.db`（不存在）而失败。  
+> **Hub 主库**：`/vol1/1000/Code/hstry backup/hstry.db`（路径含空格，引号不能省）
+
 ```toml
 database = "~/.local/share/hstry/staging.db"
 js_runtime = "node"
@@ -54,6 +57,8 @@ remotes = []
 name = "nas"
 host = "admin@memini-b506.tail76a98f.ts.net"
 enabled = true
+# 必填 — 与 NAS ~/.config/hstry/config.toml 的 database= 一致
+database_path = "/vol1/1000/Code/hstry backup/hstry.db"
 
 [sync]
 mode = "satellite"
@@ -83,6 +88,20 @@ ssh-copy-id admin@memini-b506.tail76a98f.ts.net
 # 验证
 ssh admin@memini-b506.tail76a98f.ts.net echo OK
 ```
+
+---
+
+## Phase 4.5：去重（push 前建议）
+
+与 Windows 相同：多个 Cursor source 会重复；旧版 push 前缀是 `local:`，需用 `device_id` 重推。
+
+```bash
+hstry dedup --cross-source
+hstry source prune-cursor --auto-remove   # 只留 globalStorage 的 cursor source
+hstry source list
+```
+
+**push 前确认 Windows 没在同时 push**（`auto_sync` 串行），否则 Hub `hstry.db` 会损坏。
 
 ---
 

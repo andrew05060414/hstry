@@ -43,6 +43,41 @@ Win / Mac（satellite）                飞牛 NAS（hub）
 - NAS：`docs/nas-hub-handoff.md`
 - Mac：`docs/mac-satellite-handoff.md`
 
+### ⚠️ Satellite 必填 `database_path`（Win / Mac 相同问题）
+
+Hub 主库**不在**默认的 `~/.local/share/hstry/hstry.db`，而在：
+
+```
+/vol1/1000/Code/hstry backup/hstry.db
+```
+
+每台 satellite（Windows `%APPDATA%\hstry\config.toml`、Mac `~/.config/hstry/config.toml`）的 `[[remotes]]` **必须**写：
+
+```toml
+database_path = "/vol1/1000/Code/hstry backup/hstry.db"
+```
+
+与 NAS 上 `~/.config/hstry/config.toml` 里的 `database = "..."` **完全一致**（含空格，整段加引号）。  
+漏配时 push 会打到 NAS 默认路径（不存在）→ 失败或写到错误位置。
+
+### ⚠️ 禁止 Win + Mac 同时 push
+
+两边 `auto_sync` 同时 push 会并发覆盖同一个 `hstry.db`，导致 `database disk image is malformed` 或 SCP 中断留下半截文件。
+
+**规则：**
+
+1. 只让**一台**先 push，完成后再开另一台。
+2. push 前可临时关另一侧：`auto_sync = false`，或 `hstry service stop`。
+3. 若 Hub 损坏，在 NAS 上从备份恢复后再 push：
+
+```bash
+cd "/vol1/1000/Code/hstry backup"
+cp -a hstry.db hstry.db.broken-$(date +%Y%m%d-%H%M%S)
+cp -a hstry.db.local-backup-20260725-024522 hstry.db   # 或最新可用备份
+rm -f hstry.db-wal hstry.db-shm
+hstry stats   # 应能正常输出
+```
+
 ---
 
 ## Phase 0：前置依赖
@@ -164,6 +199,8 @@ adapter_paths = [
 name = "nas"
 host = "NAS_HOST"
 enabled = true
+# 必填：Hub 主库路径（与 NAS 上 ~/.config/hstry/config.toml 的 database= 一致）
+database_path = "/vol1/1000/Code/hstry backup/hstry.db"
 
 [sync]
 mode = "satellite"
@@ -236,6 +273,7 @@ adapter_paths = ["~/.config/hstry/adapters"]
 name = "nas"
 host = "NAS_HOST"
 enabled = true
+database_path = "/vol1/1000/Code/hstry backup/hstry.db"
 
 [sync]
 mode = "satellite"
@@ -406,7 +444,9 @@ schtasks /Create /TN "hstry-service" /TR "C:\Users\Andrew\.cargo\bin\hstry.exe s
 | ---------------------------- | ------------------------------------------------------------------- |
 | `Search service unavailable` | `hstry service start`                                               |
 | `remote test` 失败           | 检查 Tailscale、`ssh NAS_HOST`、NAS 上 `hstry` 在 PATH              |
-| push 后 NAS 无数据           | `hstry remote sync --direction push -v`；看 NAS `hstry stats`       |
+| push 后 NAS 无数据           | 检查 `database_path` 是否为 `NAS_DB`；`hstry remote sync --direction push -v` |
+| `database disk image is malformed` | 两边停 push；NAS 从 `NAS_ROOT` 下 `.local-backup-*` 恢复；串行重推 |
+| Win/Mac 同时 push 冲突       | 只开一侧 `auto_sync`；见上文「禁止同时 push」                       |
 | adapter 解析空               | `js_runtime = "node"`；adapters 目录 `npm install`                  |
 | 三个 Cursor source 重复      | 只保留 `globalStorage`；`source remove` workspaceStorage / cursaves |
 | 编译缺 protoc                | `winget install Google.Protobuf` 或 NAS 上装 protobuf-compiler      |
