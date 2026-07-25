@@ -4,6 +4,16 @@
 
 Last verified: **2026-07-25** — Hub merge OK: **2154** conversations, **20** sources (`macbook:*` + `arknights:*`).
 
+**Upstream PRs (byteowlz/hstry):**
+
+| PR | Branch | Link |
+|----|--------|------|
+| Adapters | `pr/adapters-qclaw-workbuddy-antigravity` | https://github.com/byteowlz/hstry/pull/5 |
+| Sync `device_id` | `pr/sync-device-id` | https://github.com/byteowlz/hstry/pull/4 |
+| Remote merge fix | `pr/remote-sync-hub-paths` | https://github.com/byteowlz/hstry/pull/6 |
+
+Merge order: **#5** and **#4** can go in parallel → **#6** after **#4**.
+
 ---
 
 ## Upstream PR candidates (byteowlz/hstry)
