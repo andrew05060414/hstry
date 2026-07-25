@@ -38,6 +38,8 @@ Win / Mac（satellite）                飞牛 NAS（hub）
 | `HSTRY_VERSION`      | `0.5.21`                                        | 全机版本一致                 |
 | `PUSH_INTERVAL_SECS` | `300`                                           | satellite → hub 推送间隔     |
 
+**当前验收（2026-07-25）：** Hub **2154** 会话 / **89352** 消息 / **20** sources（`macbook:*` + `arknights:*` merge 成功）。分支与上游拆分见 [`andrew-nas-branch-notes.md`](./andrew-nas-branch-notes.md)；通用 sync 说明见 [`remote-sync.md`](./remote-sync.md)。
+
 **Handoff 文档：**
 
 - NAS：`docs/nas-hub-handoff.md`
@@ -73,9 +75,39 @@ database_path = "/vol1/1000/Code/hstry backup/hstry.db"
 ```bash
 cd "/vol1/1000/Code/hstry backup"
 cp -a hstry.db hstry.db.broken-$(date +%Y%m%d-%H%M%S)
-cp -a hstry.db.local-backup-20260725-024522 hstry.db   # 或最新可用备份
+cp -a hstry.db.pre-win-push-* hstry.db   # 或最新可用 .local-backup-* / 手动备份
 rm -f hstry.db-wal hstry.db-shm
 hstry stats   # 应能正常输出
+```
+
+### ⚠️ Push 必须真正 merge（验收清单）
+
+成功 push **不会**在日志里从 `001_initial_schema` 跑全套 migration（那表示在空库上 merge，会覆盖 Hub）。
+
+```bash
+# NAS 上
+hstry stats          # 会话数 ≈ 各 satellite 之和
+hstry source list    # 应同时有 macbook:* 与 arknights:*（或你的 device_id）
+```
+
+Windows 从源码安装后确认二进制日期：
+
+```powershell
+(Get-Item "$env:USERPROFILE\.cargo\bin\hstry.exe").LastWriteTime
+Copy-Item -Force "D:\Andrew\Code\Github\hstry\target\release\hstry.exe" "$env:USERPROFILE\.cargo\bin\hstry.exe"
+```
+
+若环境变量 `CARGO_TARGET_DIR` 指向别处，repo 内 `target\release\hstry.exe` 可能是旧的。
+
+### ⚠️ SSH：Tailscale vs 局域网
+
+| 场景 | `[[remotes]].host` |
+|------|---------------------|
+| 外出 / Tailscale 已授权 | `admin@memini-b506.tail76a98f.ts.net` |
+| 在家、Tailscale SSH 要浏览器验证 | `memini-b506`（`~/.ssh/config` → `192.168.0.102`） |
+
+```powershell
+ssh memini-b506 echo ok   # 局域网探活
 ```
 
 ---
@@ -443,13 +475,17 @@ schtasks /Create /TN "hstry-service" /TR "C:\Users\Andrew\.cargo\bin\hstry.exe s
 | 症状                         | 处理                                                                |
 | ---------------------------- | ------------------------------------------------------------------- |
 | `Search service unavailable` | `hstry service start`                                               |
-| `remote test` 失败           | 检查 Tailscale、`ssh NAS_HOST`、NAS 上 `hstry` 在 PATH              |
+| `remote test` 失败           | Tailscale 验证 / 改用 LAN `memini-b506`；见 `~/.ssh/config`         |
+| push 后 Hub 只剩一台数据     | 见 [`remote-sync.md`](./remote-sync.md)；查 `database_path`、二进制是否最新 |
+| push 日志出现 `001_initial_schema` | fetch 失败 → 在空库 merge；修 SSH/SCP 后从备份恢复再推      |
+| push 后 source 仍是 `local:*` | 旧版 `hstry.exe`；重编译安装带 `device_id` 的分支版本              |
 | push 后 NAS 无数据           | 检查 `database_path` 是否为 `NAS_DB`；`hstry remote sync --direction push -v` |
-| `database disk image is malformed` | 两边停 push；NAS 从 `NAS_ROOT` 下 `.local-backup-*` 恢复；串行重推 |
+| `database disk image is malformed` | 停 push；`rm -f hstry.db-wal hstry.db-shm`；必要时从备份恢复 |
 | Win/Mac 同时 push 冲突       | 只开一侧 `auto_sync`；见上文「禁止同时 push」                       |
 | adapter 解析空               | `js_runtime = "node"`；adapters 目录 `npm install`                  |
-| 三个 Cursor source 重复      | 只保留 `globalStorage`；`source remove` workspaceStorage / cursaves |
+| 三个 Cursor source 重复      | `hstry dedup --cross-source`；`hstry source prune-cursor --auto-remove` |
 | 编译缺 protoc                | `winget install Google.Protobuf` 或 NAS 上装 protobuf-compiler      |
+| `CARGO_TARGET_DIR` 导致旧二进制 | 取消该变量后 `cargo build --release -p hstry-cli` 再复制到 `.cargo\bin` |
 
 ---
 

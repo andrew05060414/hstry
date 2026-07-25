@@ -183,4 +183,17 @@ hstry search "关键词" --scope all --remote nas          # staging + NAS
 
 ## 完整文档
 
-`docs/nas-hub-setup.md`
+- 个人部署手册：`docs/nas-hub-setup.md`
+- 分支 / 上游拆分：`docs/andrew-nas-branch-notes.md`
+- 通用 sync 说明（可 PR upstream）：`docs/remote-sync.md`
+
+### SSH 备选（在家）
+
+Tailscale SSH 若要求浏览器验证，可临时把 `[[remotes]].host` 改为局域网别名（`~/.ssh/config` 里已配置 `Host memini-b506` → `192.168.0.102`）。外出再改回 `admin@memini-b506.tail76a98f.ts.net`。
+
+### Push 验收
+
+```bash
+ssh admin@memini-b506.tail76a98f.ts.net hstry stats
+# 应看到 macbook:* 与 arknights:* 并存
+```
