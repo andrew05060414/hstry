@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::config::RemoteConfig;
 use crate::db::{Database, SearchOptions};
 use crate::error::{Error, Result};
-use crate::models::{Conversation, ConversationWithMessages, Message, SearchHit};
+use crate::models::{Conversation, ConversationWithMessages, Message, SearchHit, Source};
 
 /// Default remote database path (XDG standard).
 pub const DEFAULT_REMOTE_DB_PATH: &str = "~/.local/share/hstry/hstry.db";
@@ -58,6 +58,7 @@ pub struct SyncResult {
     pub conversations_updated: usize,
     pub messages_added: usize,
     pub sources_added: usize,
+    pub sources_updated: usize,
     pub direction: SyncDirection,
 }
 
@@ -322,6 +323,42 @@ pub fn fetch_remote(config: &RemoteConfig) -> Result<FetchResult> {
     })
 }
 
+/// Merge satellite source metadata into an existing hub source.
+///
+/// Returns `None` when the incoming record is stale (older `last_sync_at`) so an
+/// old device cannot roll hub timestamps backward. When accepted, refreshes
+/// `last_sync_at` (max of existing/incoming), `config` (including sync cursor),
+/// `path`, and `adapter` from the incoming record.
+fn merge_source_metadata(existing: &Source, incoming: &Source) -> Option<Source> {
+    let incoming_ts = incoming.last_sync_at?;
+
+    if let Some(existing_ts) = existing.last_sync_at {
+        if incoming_ts < existing_ts {
+            return None;
+        }
+    }
+
+    let merged_last_sync = match existing.last_sync_at {
+        Some(existing_ts) if existing_ts > incoming_ts => Some(existing_ts),
+        _ => Some(incoming_ts),
+    };
+
+    Some(Source {
+        id: existing.id.clone(),
+        adapter: incoming.adapter.clone(),
+        path: incoming.path.clone(),
+        last_sync_at: merged_last_sync,
+        config: incoming.config.clone(),
+    })
+}
+
+fn source_metadata_changed(before: &Source, after: &Source) -> bool {
+    before.last_sync_at != after.last_sync_at
+        || before.config != after.config
+        || before.path != after.path
+        || before.adapter != after.adapter
+}
+
 /// Merge conversations from a source database into a target database.
 /// Uses updated_at for conflict resolution (newer wins).
 pub async fn merge_databases(
@@ -336,6 +373,7 @@ pub async fn merge_databases(
     let mut conversations_updated = 0usize;
     let mut messages_added = 0usize;
     let mut sources_added = 0usize;
+    let mut sources_updated = 0usize;
 
     // Merge sources (prefixed with remote name to avoid conflicts)
     let remote_sources = source.list_sources().await?;
@@ -346,9 +384,19 @@ pub async fn merge_databases(
 
         // Check if source already exists
         let existing = target.get_source(&remote_source.id).await?;
-        if existing.is_none() {
-            target.upsert_source(&remote_source).await?;
-            sources_added += 1;
+        match existing {
+            None => {
+                target.upsert_source(&remote_source).await?;
+                sources_added += 1;
+            }
+            Some(existing_source) => {
+                if let Some(merged) = merge_source_metadata(&existing_source, &remote_source) {
+                    if source_metadata_changed(&existing_source, &merged) {
+                        target.upsert_source(&merged).await?;
+                        sources_updated += 1;
+                    }
+                }
+            }
         }
     }
 
@@ -477,6 +525,7 @@ pub async fn merge_databases(
         conversations_updated,
         messages_added,
         sources_added,
+        sources_updated,
         direction: SyncDirection::Pull,
     })
 }
@@ -552,6 +601,7 @@ pub async fn sync_to_remote(
         conversations_updated: sync_result.conversations_updated,
         messages_added: sync_result.messages_added,
         sources_added: sync_result.sources_added,
+        sources_updated: sync_result.sources_updated,
         direction: SyncDirection::Push,
     })
 }
@@ -910,5 +960,172 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(convs.len(), 2);
+    }
+
+    #[test]
+    fn merge_source_metadata_accepts_newer_incoming() {
+        let old_ts = Utc::now() - chrono::Duration::days(2);
+        let new_ts = Utc::now();
+
+        let existing = Source {
+            id: "arknights:cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor".to_string()),
+            last_sync_at: Some(old_ts),
+            config: serde_json::json!({ "cursor": "old" }),
+        };
+        let incoming = Source {
+            id: "arknights:cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor".to_string()),
+            last_sync_at: Some(new_ts),
+            config: serde_json::json!({ "cursor": "new" }),
+        };
+
+        let merged = merge_source_metadata(&existing, &incoming).expect("should merge");
+        assert_eq!(merged.last_sync_at, Some(new_ts));
+        assert_eq!(merged.config["cursor"], "new");
+    }
+
+    #[test]
+    fn merge_source_metadata_rejects_stale_incoming() {
+        let old_ts = Utc::now() - chrono::Duration::days(2);
+        let new_ts = Utc::now();
+
+        let existing = Source {
+            id: "arknights:cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor".to_string()),
+            last_sync_at: Some(new_ts),
+            config: serde_json::json!({ "cursor": "current" }),
+        };
+        let incoming = Source {
+            id: "arknights:cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor-stale".to_string()),
+            last_sync_at: Some(old_ts),
+            config: serde_json::json!({ "cursor": "stale" }),
+        };
+
+        assert!(merge_source_metadata(&existing, &incoming).is_none());
+    }
+
+    #[tokio::test]
+    async fn second_push_updates_existing_source_metadata_without_adding_source() {
+        use crate::models::Source;
+
+        let old_ts = Utc::now() - chrono::Duration::days(2);
+        let new_ts = Utc::now();
+
+        let hub_dir = tempfile::tempdir().unwrap();
+        let hub_path = hub_dir.path().join("hub.db");
+        let hub = Database::open(&hub_path).await.unwrap();
+
+        let hub_source = Source {
+            id: "arknights:cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor".to_string()),
+            last_sync_at: Some(old_ts),
+            config: serde_json::json!({ "cursor": "old" }),
+        };
+        hub.upsert_source(&hub_source).await.unwrap();
+        hub.close().await;
+
+        let local_dir = tempfile::tempdir().unwrap();
+        let local_path = local_dir.path().join("local.db");
+        let local = Database::open(&local_path).await.unwrap();
+
+        let local_source = Source {
+            id: "cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor".to_string()),
+            last_sync_at: Some(new_ts),
+            config: serde_json::json!({ "cursor": "new" }),
+        };
+        local.upsert_source(&local_source).await.unwrap();
+        local.close().await;
+
+        let merged_dir = tempfile::tempdir().unwrap();
+        let merged_path = merged_dir.path().join("merged.db");
+        std::fs::copy(&hub_path, &merged_path).unwrap();
+        let merged = Database::open(&merged_path).await.unwrap();
+
+        let result = merge_databases(&merged, &local_path, "arknights")
+            .await
+            .unwrap();
+
+        assert_eq!(result.sources_added, 0);
+        assert_eq!(result.sources_updated, 1);
+
+        let updated = merged
+            .get_source("arknights:cursor-abc")
+            .await
+            .unwrap()
+            .expect("source should exist");
+        assert_eq!(
+            updated.last_sync_at.map(|t| t.timestamp()),
+            Some(new_ts.timestamp())
+        );
+        assert_eq!(updated.config["cursor"], "new");
+    }
+
+    #[tokio::test]
+    async fn stale_push_does_not_regress_source_last_sync_at() {
+        use crate::models::Source;
+
+        let old_ts = Utc::now() - chrono::Duration::days(2);
+        let new_ts = Utc::now();
+
+        let hub_dir = tempfile::tempdir().unwrap();
+        let hub_path = hub_dir.path().join("hub.db");
+        let hub = Database::open(&hub_path).await.unwrap();
+
+        let hub_source = Source {
+            id: "arknights:cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor".to_string()),
+            last_sync_at: Some(new_ts),
+            config: serde_json::json!({ "cursor": "current" }),
+        };
+        hub.upsert_source(&hub_source).await.unwrap();
+        hub.close().await;
+
+        let local_dir = tempfile::tempdir().unwrap();
+        let local_path = local_dir.path().join("local.db");
+        let local = Database::open(&local_path).await.unwrap();
+
+        let local_source = Source {
+            id: "cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor-stale".to_string()),
+            last_sync_at: Some(old_ts),
+            config: serde_json::json!({ "cursor": "stale" }),
+        };
+        local.upsert_source(&local_source).await.unwrap();
+        local.close().await;
+
+        let merged_dir = tempfile::tempdir().unwrap();
+        let merged_path = merged_dir.path().join("merged.db");
+        std::fs::copy(&hub_path, &merged_path).unwrap();
+        let merged = Database::open(&merged_path).await.unwrap();
+
+        let result = merge_databases(&merged, &local_path, "arknights")
+            .await
+            .unwrap();
+
+        assert_eq!(result.sources_added, 0);
+        assert_eq!(result.sources_updated, 0);
+
+        let unchanged = merged
+            .get_source("arknights:cursor-abc")
+            .await
+            .unwrap()
+            .expect("source should exist");
+        assert_eq!(
+            unchanged.last_sync_at.map(|t| t.timestamp()),
+            Some(new_ts.timestamp())
+        );
+        assert_eq!(unchanged.config["cursor"], "current");
+        assert_eq!(unchanged.path.as_deref(), Some("/win/cursor"));
     }
 }

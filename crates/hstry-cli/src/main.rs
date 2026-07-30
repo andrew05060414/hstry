@@ -6691,6 +6691,7 @@ async fn cmd_remote(
                                     sync.conversations_added += push_sync.conversations_added;
                                     sync.conversations_updated += push_sync.conversations_updated;
                                     sync.messages_added += push_sync.messages_added;
+                                    sync.sources_updated += push_sync.sources_updated;
                                     sync.direction =
                                         hstry_core::remote::SyncDirection::Bidirectional;
                                 }
@@ -6707,8 +6708,9 @@ async fn cmd_remote(
                             let added = sync_result.conversations_added;
                             let updated = sync_result.conversations_updated;
                             let messages = sync_result.messages_added;
+                            let sources_updated = sync_result.sources_updated;
                             println!(
-                                "  Added {added} conversations, updated {updated}, {messages} messages"
+                                "  Added {added} conversations, updated {updated}, {messages} messages, {sources_updated} sources refreshed"
                             );
                         }
                         total_convs_added += sync_result.conversations_added;
