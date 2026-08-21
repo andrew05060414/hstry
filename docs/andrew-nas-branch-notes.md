@@ -67,7 +67,7 @@ Personal environment, handoffs, and planning notes. Keep on `fork/andrew-nas` or
 | Win staging | `D:/Data/hstry/staging.db` |
 | Tailscale SSH | `admin@memini-b506.tail76a98f.ts.net` (may need browser check) |
 | LAN SSH | `memini-b506` → `192.168.0.102` (`~/.ssh/config`) |
-| hstry version | `0.5.21` (build from this branch, not crates.io) |
+| hstry version | `1.0.0` (build from this fork, not crates.io) |
 
 ### SSH tip
 

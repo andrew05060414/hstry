@@ -1,6 +1,10 @@
 # hstry
 
-Universal AI chat history database. Aggregates conversations from multiple AI tools (ChatGPT, Claude, Gemini, Cursor, Claude Code, etc.) into a single searchable SQLite database.
+Personal fork of [byteowlz/hstry](https://github.com/byteowlz/hstry). Canonical repo: [andrew05060414/hstry](https://github.com/andrew05060414/hstry). The name stays `hstry` for now.
+
+Universal AI chat history database. Aggregates conversations from local coding agents (Cursor, Codex, Claude Code, Pi, OpenCode, QClaw, WorkBuddy, Antigravity CLI, and others) into a single searchable SQLite database. Optional NAS hub/satellite sync keeps Windows and Mac histories namespaced.
+
+Web ChatGPT / Gemini live ingest is a later milestone; takeout export adapters already exist.
 
 ## Features
 
@@ -19,65 +23,30 @@ Universal AI chat history database. Aggregates conversations from multiple AI to
 
 ## Installation
 
-### Homebrew (macOS and Linux)
+This fork is installed from source. Upstream Homebrew / AUR / Scoop packages track `byteowlz/hstry` and will not include these 1.0 changes.
+
+### Cargo (this repo)
 
 ```bash
-brew tap byteowlz/tap
-brew install hstry
-```
-
-### Arch Linux (AUR)
-
-```bash
-# Using yay (recommended)
-yay -S hstry
-
-# Using paru
-paru -S hstry
-
-# Using makepkg (manual)
-git clone https://aur.archlinux.org/hstry.git
+git clone https://github.com/andrew05060414/hstry.git
 cd hstry
-makepkg -si
-```
-
-### Cargo
-
-```bash
 cargo install --path crates/hstry-cli
 ```
 
-### Scoop (Windows)
+To install all binaries (CLI, TUI, MCP):
 
-Once published to the Scoop bucket:
-
-```powershell
-scoop bucket add byteowlz https://github.com/byteowlz/scoop-bucket
-scoop install hstry
+```bash
+cargo install --path crates/hstry-cli
+cargo install --path crates/hstry-tui
+cargo install --path crates/hstry-mcp
 ```
-
-Until Scoop packaging ships, build from source (below) or install via Cargo.
-
-### Pre-built Binaries
-
-Download pre-built binaries from the [GitHub Releases](https://github.com/byteowlz/hstry/releases) page.
-
-Available platforms:
-- Linux x86_64 and ARM64
-- macOS Intel and Apple Silicon
-- Windows x86_64 (release artifacts are a follow-up; CI already builds on `windows-latest`)
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/byteowlz/hstry.git
+git clone https://github.com/andrew05060414/hstry.git
 cd hstry
 cargo build --release --workspace
-```
-
-To install all binaries (CLI, TUI, MCP):
-```bash
-cargo install --path .
 ```
 
 ### Windows (build and usage)
@@ -456,7 +425,7 @@ just update-adapters-windows # Windows: copy to %APPDATA%\hstry\adapters
 ```
 ## Contributing
 
-Contributions are welcome! Please see [docs/RELEASE.md](docs/RELEASE.md) for information about the release process.
+This is a personal fork. Issues live in `.trx/`. See [CHANGELOG.md](CHANGELOG.md) for 1.0 notes.
 
 ## Release Notes
 
@@ -464,14 +433,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list of changes.
 
 ## Release Process
 
-The release process is fully automated via GitHub Actions:
-
-1. **GitHub Releases**: Automatic builds for Linux (x86_64/ARM64) and macOS (Intel/Apple Silicon); Windows zip packaging is a follow-up
-2. **Homebrew**: Automatic formula updates in `byteowlz/homebrew-tap`
-3. **AUR**: Automatic PKGBUILD updates
-4. **Scoop** (planned): Windows installs via `byteowlz/scoop-bucket`
-
-See [docs/RELEASE.md](docs/RELEASE.md) for detailed release instructions.
+Tags on this fork (`v1.0.0` and later) are cut from `release/1.0`. Upstream GitHub Actions still document Homebrew/AUR for `byteowlz/hstry`; this fork does not publish those packages. See [docs/RELEASE.md](docs/RELEASE.md) if you need the original automation layout.
 
 ## Attribution
 

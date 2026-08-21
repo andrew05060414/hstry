@@ -13,7 +13,7 @@ NAS_ADAPTERS="${NAS_ROOT}/adapters"
 NAS_INBOX="${NAS_ROOT}/inbox"          # 可选：手动原始导出
 NAS_SSH="admin@memini-b506.tail76a98f.ts.net"   # 推荐（Tailscale FQDN）
 # 备选: admin@100.73.230.28  |  admin@memini-b506
-HSTRY_VERSION=0.5.21
+HSTRY_VERSION=1.0.0
 REMOTE_NAME=nas                        # Win/Mac 固定用此名
 ```
 
@@ -44,7 +44,7 @@ node -v || echo "需 Node LTS（NAS 已有 fnm/Node LTS）"
 mkdir -p "$NAS_ROOT/adapters" "$NAS_ROOT/inbox" ~/.config/hstry
 
 # 3. 获取 adapters + 二进制（二选一）
-git clone --depth 1 --branch v0.5.21 https://github.com/byteowlz/hstry /tmp/hstry
+git clone --depth 1 --branch v1.0.0 https://github.com/andrew05060414/hstry /tmp/hstry
 cp -r /tmp/hstry/adapters/* "$NAS_ROOT/adapters/"
 # hstry 二进制：cargo install --path /tmp/hstry/crates/hstry-cli  或 release 下载
 

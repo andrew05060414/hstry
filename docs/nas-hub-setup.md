@@ -35,7 +35,7 @@ Win / Mac（satellite）                飞牛 NAS（hub）
 | `MAC_DEVICE_ID`      | `macbook`                                       | Mac satellite 标识           |
 | `WIN_STAGING_DB`     | `D:/Data/hstry/staging.db`                        | Windows 暂存库               |
 | `MAC_STAGING_DB`     | `~/.local/share/hstry/staging.db`               | Mac 暂存库                   |
-| `HSTRY_VERSION`      | `0.5.21`                                        | 全机版本一致                 |
+| `HSTRY_VERSION`      | `1.0.0`                                         | 全机版本一致                 |
 | `PUSH_INTERVAL_SECS` | `300`                                           | satellite → hub 推送间隔     |
 
 **当前验收（2026-07-25）：** Hub **2154** 会话 / **89352** 消息 / **20** sources（`macbook:*` + `arknights:*` merge 成功）。分支与上游拆分见 [`andrew-nas-branch-notes.md`](./andrew-nas-branch-notes.md)；通用 sync 说明见 [`remote-sync.md`](./remote-sync.md)。

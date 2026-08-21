@@ -10,10 +10,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.21"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/byteowlz/hstry"
+repository = "https://github.com/andrew05060414/hstry"
 
 [workspace.dependencies]
 # Shared across workspace

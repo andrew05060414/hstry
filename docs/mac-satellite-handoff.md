@@ -10,7 +10,7 @@
 NAS_SSH="admin@memini-b506.tail76a98f.ts.net"
 REMOTE_NAME="nas"
 DEVICE_ID="macbook"
-HSTRY_VERSION="0.5.21"
+HSTRY_VERSION="1.0.0"
 STAGING_DB="$HOME/.local/share/hstry/staging.db"
 ```
 
@@ -22,8 +22,8 @@ STAGING_DB="$HOME/.local/share/hstry/staging.db"
 # 依赖
 brew install node
 # hstry：brew install（若有 tap）或：
-# cargo install --git https://github.com/byteowlz/hstry --tag v0.5.21 hstry-cli
-hstry -V    # → 0.5.21
+# cargo install --git https://github.com/andrew05060414/hstry --tag v1.0.0 hstry-cli
+hstry -V    # → 1.0.0
 ```
 
 ---
@@ -33,7 +33,7 @@ hstry -V    # → 0.5.21
 ```bash
 mkdir -p ~/.config/hstry/adapters
 # 从仓库复制或 git clone
-git clone --depth 1 --branch v0.5.21 https://github.com/byteowlz/hstry /tmp/hstry
+git clone --depth 1 --branch v1.0.0 https://github.com/andrew05060414/hstry /tmp/hstry
 cp -r /tmp/hstry/adapters/* ~/.config/hstry/adapters/
 cd ~/.config/hstry/adapters && npm install
 ```
