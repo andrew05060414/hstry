@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use hstry_core::{
     Config, Database,
+    config::SearchScope as CoreSearchScope,
     db::ListConversationsOptions,
     models::{Conversation, Message, MessageRole, SearchHit, Source},
 };
@@ -740,6 +741,16 @@ impl SearchScope {
     }
 }
 
+impl From<CoreSearchScope> for SearchScope {
+    fn from(scope: CoreSearchScope) -> Self {
+        match scope {
+            CoreSearchScope::Local => Self::Local,
+            CoreSearchScope::Remote => Self::Remote,
+            CoreSearchScope::All => Self::All,
+        }
+    }
+}
+
 // =============================================================================
 // Filter State
 // =============================================================================
@@ -971,11 +982,7 @@ impl App {
         let nav_items = build_source_nav_items(&sources);
 
         let filtered_conversations = conversations.clone();
-        let search_scope = if config.prefers_hub_search() {
-            SearchScope::Remote
-        } else {
-            SearchScope::Local
-        };
+        let search_scope = SearchScope::from(config.resolve_search_scope(None));
 
         Self {
             config,
@@ -1284,8 +1291,9 @@ impl App {
                 }
 
                 if search_scope != SearchScope::Local {
+                    let remote_list = config.remotes_for_search(&[])?;
                     let remote_hits =
-                        hstry_core::remote::search_remotes(&config.remotes, &query, &opts).await?;
+                        hstry_core::remote::search_remotes(&remote_list, &query, &opts).await?;
                     results.extend(remote_hits);
                 }
 

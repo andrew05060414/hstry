@@ -283,7 +283,7 @@ impl Default for WebConfig {
 }
 
 /// Configuration for a remote host (SSH-based sync).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteConfig {
     /// Unique name for this remote (e.g., "laptop", "server").
     pub name: String,
@@ -435,11 +435,75 @@ impl Default for Config {
     }
 }
 
+/// Where search looks when `--scope` / TUI scope is omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    Local,
+    Remote,
+    All,
+}
+
 impl Config {
     /// Satellites should read the hub archive by default (trx-1xsa).
     /// Standalone / hub keep local search.
     pub fn prefers_hub_search(&self) -> bool {
         self.sync.mode == SyncMode::Satellite && self.sync.hub_remote.is_some()
+    }
+
+    /// Explicit scope wins; satellite + `hub_remote` defaults to remote; otherwise local.
+    pub fn resolve_search_scope(&self, explicit: Option<SearchScope>) -> SearchScope {
+        if let Some(scope) = explicit {
+            return scope;
+        }
+        if self.prefers_hub_search() {
+            SearchScope::Remote
+        } else {
+            SearchScope::Local
+        }
+    }
+
+    /// Remotes used when the caller did not pass `--remote` / a TUI selection.
+    ///
+    /// If `sync.hub_remote` is set, only that named remote is returned. A missing
+    /// name is an error — never fall back to searching every remote.
+    pub fn remotes_for_default_search(&self) -> Result<Vec<RemoteConfig>> {
+        let Some(hub) = self.sync.hub_remote.as_deref() else {
+            return Ok(self.remotes.clone());
+        };
+        let hub_only: Vec<RemoteConfig> = self
+            .remotes
+            .iter()
+            .filter(|remote| remote.name == hub)
+            .cloned()
+            .collect();
+        if hub_only.is_empty() {
+            let available = if self.remotes.is_empty() {
+                "none".to_string()
+            } else {
+                self.remotes
+                    .iter()
+                    .map(|remote| remote.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            return Err(Error::Config(format!(
+                "sync.hub_remote '{hub}' is not a configured remote (available: {available}). Fix hub_remote or add a matching [[remotes]] entry"
+            )));
+        }
+        Ok(hub_only)
+    }
+
+    /// Remotes to query. Empty `selected` uses [`Self::remotes_for_default_search`].
+    pub fn remotes_for_search(&self, selected: &[String]) -> Result<Vec<RemoteConfig>> {
+        if selected.is_empty() {
+            return self.remotes_for_default_search();
+        }
+        Ok(self
+            .remotes
+            .iter()
+            .filter(|remote| selected.contains(&remote.name))
+            .cloned()
+            .collect())
     }
 }
 

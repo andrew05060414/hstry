@@ -91,6 +91,111 @@ mod default_config_tests {
 }
 
 #[cfg(test)]
+mod search_scope_tests {
+    use super::super::{Config, RemoteConfig, SearchScope, SyncMode};
+
+    fn remote(name: &str) -> RemoteConfig {
+        RemoteConfig {
+            name: name.to_string(),
+            host: format!("{name}.example"),
+            database_path: None,
+            port: None,
+            identity_file: None,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn explicit_search_scope_wins() {
+        let mut config = Config::default();
+        config.sync.mode = SyncMode::Satellite;
+        config.sync.hub_remote = Some("nas".into());
+        assert_eq!(
+            [
+                config.resolve_search_scope(Some(SearchScope::Local)),
+                config.resolve_search_scope(Some(SearchScope::All)),
+                config.resolve_search_scope(Some(SearchScope::Remote)),
+            ],
+            [SearchScope::Local, SearchScope::All, SearchScope::Remote]
+        );
+    }
+
+    #[test]
+    fn satellite_with_hub_defaults_to_remote_search() {
+        let mut config = Config::default();
+        config.sync.mode = SyncMode::Satellite;
+        config.sync.hub_remote = Some("nas".into());
+        assert_eq!(config.resolve_search_scope(None), SearchScope::Remote);
+    }
+
+    #[test]
+    fn otherwise_defaults_to_local_search() {
+        let mut hub = Config::default();
+        hub.sync.mode = SyncMode::Hub;
+        hub.sync.hub_remote = Some("nas".into());
+
+        let mut satellite = Config::default();
+        satellite.sync.mode = SyncMode::Satellite;
+
+        assert_eq!(
+            [
+                Config::default().resolve_search_scope(None),
+                hub.resolve_search_scope(None),
+                satellite.resolve_search_scope(None),
+            ],
+            [SearchScope::Local, SearchScope::Local, SearchScope::Local]
+        );
+    }
+
+    #[test]
+    fn default_search_remotes_filter_to_hub() {
+        let nas = remote("nas");
+        let home = remote("home");
+        let all = vec![nas.clone(), home.clone()];
+        let mut no_hub = Config::default();
+        no_hub.remotes = all.clone();
+        assert_eq!(no_hub.remotes_for_default_search().unwrap(), all);
+
+        let mut config = Config::default();
+        config.sync.hub_remote = Some("nas".into());
+        config.remotes = vec![nas.clone(), home.clone()];
+        assert_eq!(
+            config.remotes_for_default_search().unwrap(),
+            vec![nas.clone()]
+        );
+        assert_eq!(
+            config.remotes_for_search(&["home".into()]).unwrap(),
+            vec![home]
+        );
+    }
+
+    #[test]
+    fn missing_hub_remote_is_an_error() {
+        let nas = remote("nas");
+        let home = remote("home");
+        let mut config = Config::default();
+        config.sync.hub_remote = Some("ghost".into());
+        config.remotes = vec![nas, home];
+        assert_eq!(
+            config.remotes_for_default_search().unwrap_err().to_string(),
+            "Configuration error: sync.hub_remote 'ghost' is not a configured remote (available: nas, home). Fix hub_remote or add a matching [[remotes]] entry"
+        );
+    }
+
+    #[test]
+    fn explicit_remotes_ignore_missing_hub() {
+        let home = remote("home");
+        let mut config = Config::default();
+        config.sync.hub_remote = Some("ghost".into());
+        config.remotes = vec![home.clone()];
+        assert_eq!(
+            config.remotes_for_search(&["home".into()]).unwrap(),
+            vec![home]
+        );
+    }
+}
+
+#[cfg(test)]
 mod adapter_enabled_tests {
     use super::super::{AdapterConfig, Config};
 

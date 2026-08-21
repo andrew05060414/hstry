@@ -478,15 +478,13 @@ function parseSqliteConversation(ref: StoreRef, root: string): Conversation | nu
 
     const messages: Message[] = [];
     let title: string | undefined;
-    let createdAt = 0;
-    let updatedAt = 0;
+    const knownTs: number[] = [];
 
     for (const row of rows) {
       const payload = toUint8(row.step_payload);
       const metaBytes = toUint8(row.metadata);
-      const ts = extractTimestampMs(metaBytes) ?? (createdAt || Date.now());
-      if (!createdAt) createdAt = ts;
-      if (ts > updatedAt) updatedAt = ts;
+      const ts = extractTimestampMs(metaBytes, payload);
+      if (ts !== undefined) knownTs.push(ts);
 
       if (row.step_type === STEP_TITLE) {
         title = extractTitle(payload) ?? title;
@@ -536,8 +534,12 @@ function parseSqliteConversation(ref: StoreRef, root: string): Conversation | nu
     }
 
     if (messages.length === 0) return null;
-    if (!createdAt) createdAt = Date.now();
-    if (!updatedAt) updatedAt = createdAt;
+    const fallback = knownTs.length > 0 ? Math.min(...knownTs) : Date.now();
+    const createdAt = Math.floor(fallback);
+    const updatedAt = Math.floor(knownTs.length > 0 ? Math.max(...knownTs) : fallback);
+    for (const msg of messages) {
+      msg.createdAt = Math.floor(msg.createdAt ?? fallback);
+    }
 
     const frum = findFirstRealUserMessage(
       messages.map(m => ({ role: m.role, content: m.content })),

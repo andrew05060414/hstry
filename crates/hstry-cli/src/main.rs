@@ -204,7 +204,7 @@ enum Command {
         #[arg(long, value_enum)]
         scope: Option<SearchScopeArg>,
 
-        /// Remote names to query (default: all enabled)
+        /// Remote names to query (default: hub_remote if set, otherwise all enabled)
         #[arg(long)]
         remote: Vec<String>,
 
@@ -979,8 +979,15 @@ async fn main() -> Result<()> {
                 .and_then(|v| v.workspace.clone())
                 .or(workspace);
             let mode = input.as_ref().and_then(|v| v.mode).unwrap_or(mode);
-            let scope =
-                resolve_search_scope(&config, input.as_ref().and_then(|v| v.scope).or(scope));
+            let scope = SearchScopeArg::from(
+                config.resolve_search_scope(
+                    input
+                        .as_ref()
+                        .and_then(|v| v.scope)
+                        .or(scope)
+                        .map(Into::into),
+                ),
+            );
             let remotes = input
                 .as_ref()
                 .and_then(|v| v.remotes.clone())
@@ -2069,31 +2076,7 @@ async fn cmd_search_fast(
     }
 
     if scope != SearchScopeArg::Local {
-        let remote_list = if remotes.is_empty() {
-            if let Some(hub) = config.sync.hub_remote.as_deref() {
-                let hub_only: Vec<_> = config
-                    .remotes
-                    .iter()
-                    .filter(|remote| remote.name == hub)
-                    .cloned()
-                    .collect();
-                if hub_only.is_empty() {
-                    config.remotes.clone()
-                } else {
-                    hub_only
-                }
-            } else {
-                config.remotes.clone()
-            }
-        } else {
-            config
-                .remotes
-                .iter()
-                .filter(|remote| remotes.contains(&remote.name))
-                .cloned()
-                .collect()
-        };
-
+        let remote_list = config.remotes_for_search(&remotes)?;
         let remote_hits = hstry_core::remote::search_remotes(&remote_list, query, &opts).await?;
         messages.extend(remote_hits);
     }
@@ -2312,14 +2295,23 @@ enum SearchScopeArg {
     All,
 }
 
-fn resolve_search_scope(config: &Config, explicit: Option<SearchScopeArg>) -> SearchScopeArg {
-    if let Some(scope) = explicit {
-        return scope;
+impl From<SearchScopeArg> for hstry_core::config::SearchScope {
+    fn from(value: SearchScopeArg) -> Self {
+        match value {
+            SearchScopeArg::Local => Self::Local,
+            SearchScopeArg::Remote => Self::Remote,
+            SearchScopeArg::All => Self::All,
+        }
     }
-    if config.prefers_hub_search() {
-        SearchScopeArg::Remote
-    } else {
-        SearchScopeArg::Local
+}
+
+impl From<hstry_core::config::SearchScope> for SearchScopeArg {
+    fn from(value: hstry_core::config::SearchScope) -> Self {
+        match value {
+            hstry_core::config::SearchScope::Local => Self::Local,
+            hstry_core::config::SearchScope::Remote => Self::Remote,
+            hstry_core::config::SearchScope::All => Self::All,
+        }
     }
 }
 

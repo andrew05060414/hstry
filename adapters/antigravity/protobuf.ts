@@ -5,7 +5,9 @@
  *   19.2  user text (step_type 14)
  *   20.1  assistant text (step_type 15)
  *   30.4  title (step_type 23)
- *    5.4  tool call { 2|9 name, 3 inputJson }
+ *    5    CortexStepMetadata (wire 2): Timestamp at 5.1.{1 seconds, 2 nanos};
+ *         tool call remains at 5.4 (`extractToolCall`). Same field may also be
+ *         a unix varint (wire 0).
  */
 
 export function readVarint(buf: Uint8Array, i: number): [number, number] {
@@ -139,11 +141,43 @@ export function extractToolCall(payload: Uint8Array): { name: string; inputJson:
   return { name, inputJson };
 }
 
-export function extractTimestampMs(metadata: Uint8Array): number | undefined {
-  const envelope = getField(metadata, 1) ?? metadata;
+function asTimestampMs(varint: number | null): number | undefined {
+  if (varint == null || varint <= 1_000_000_000) return undefined;
+  return Math.floor(varint > 1e12 ? varint : varint * 1000);
+}
+
+/** CortexStepMetadata / Timestamp envelope: field 1 is google.protobuf.Timestamp. */
+function timestampFromEnvelope(buf: Uint8Array): number | undefined {
+  if (!buf.length) return undefined;
+  const envelope = getField(buf, 1) ?? buf;
   for (const f of walkFields(envelope)) {
-    if (f.wire === 0 && f.varint && f.varint > 1_000_000_000) {
-      return f.varint > 1e12 ? f.varint : f.varint * 1000;
+    const ts = asTimestampMs(f.wire === 0 ? f.varint : null);
+    if (ts !== undefined) return ts;
+  }
+  return undefined;
+}
+
+/**
+ * Timestamp from step `metadata`, or from payload field 5.
+ *
+ * Field 5 is a oneof-ish slot: a unix varint (wire 0), or CortexStepMetadata
+ * (wire 2) which also holds the tool-call message at 5.4 (`extractToolCall`).
+ */
+export function extractTimestampMs(
+  metadata: Uint8Array,
+  payload?: Uint8Array,
+): number | undefined {
+  const fromMeta = timestampFromEnvelope(metadata);
+  if (fromMeta !== undefined) return fromMeta;
+  if (!payload?.length) return undefined;
+  for (const f of walkFields(payload)) {
+    if (f.field !== 5) continue;
+    if (f.wire === 0) {
+      const ts = asTimestampMs(f.varint);
+      if (ts !== undefined) return ts;
+    } else if (f.wire === 2 && f.bytes) {
+      const ts = timestampFromEnvelope(f.bytes);
+      if (ts !== undefined) return ts;
     }
   }
   return undefined;

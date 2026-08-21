@@ -20,6 +20,12 @@ Upstream last consumed here is `v0.5.21` (`c8923f1`). Upstream `v0.5.22` (TUI ov
 
 - Satellite search defaults to the hub remote (`sync.hub_remote`) instead of local staging (trx-1xsa). Pass `--scope local` to search only this machine.
 
+### Fixed
+
+- Antigravity SQLite conversations read timestamps from `step_payload` field 5 (`CortexStepMetadata` Timestamp, or a unix varint) when `metadata` is empty, instead of using wall-clock `Date.now()` per row.
+- Default remote search (CLI and TUI) uses `sync.hub_remote` and errors if that name is missing, instead of silently querying every remote. Explicit `--remote` is unchanged.
+- Windows MSVC debug builds reserve an 8MB stack so `hstry --help` no longer hits `STATUS_STACK_OVERFLOW`.
+
 ## [1.0.0] - 2026-08-21
 
 Fork 1.0: local agent archive + NAS hub/satellite. Canonical remote is `andrew05060414/hstry`.
