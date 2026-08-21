@@ -200,9 +200,9 @@ enum Command {
         #[arg(long, value_enum, default_value = "auto")]
         mode: SearchModeArg,
 
-        /// Search scope (local, remote, all)
-        #[arg(long, value_enum, default_value = "local")]
-        scope: SearchScopeArg,
+        /// Search scope (local, remote, all). Satellite + hub_remote defaults to remote.
+        #[arg(long, value_enum)]
+        scope: Option<SearchScopeArg>,
 
         /// Remote names to query (default: all enabled)
         #[arg(long)]
@@ -979,7 +979,8 @@ async fn main() -> Result<()> {
                 .and_then(|v| v.workspace.clone())
                 .or(workspace);
             let mode = input.as_ref().and_then(|v| v.mode).unwrap_or(mode);
-            let scope = input.as_ref().and_then(|v| v.scope).unwrap_or(scope);
+            let scope =
+                resolve_search_scope(&config, input.as_ref().and_then(|v| v.scope).or(scope));
             let remotes = input
                 .as_ref()
                 .and_then(|v| v.remotes.clone())
@@ -2069,7 +2070,21 @@ async fn cmd_search_fast(
 
     if scope != SearchScopeArg::Local {
         let remote_list = if remotes.is_empty() {
-            config.remotes.clone()
+            if let Some(hub) = config.sync.hub_remote.as_deref() {
+                let hub_only: Vec<_> = config
+                    .remotes
+                    .iter()
+                    .filter(|remote| remote.name == hub)
+                    .cloned()
+                    .collect();
+                if hub_only.is_empty() {
+                    config.remotes.clone()
+                } else {
+                    hub_only
+                }
+            } else {
+                config.remotes.clone()
+            }
         } else {
             config
                 .remotes
@@ -2295,6 +2310,17 @@ enum SearchScopeArg {
     Local,
     Remote,
     All,
+}
+
+fn resolve_search_scope(config: &Config, explicit: Option<SearchScopeArg>) -> SearchScopeArg {
+    if let Some(scope) = explicit {
+        return scope;
+    }
+    if config.prefers_hub_search() {
+        SearchScopeArg::Remote
+    } else {
+        SearchScopeArg::Local
+    }
 }
 
 #[derive(

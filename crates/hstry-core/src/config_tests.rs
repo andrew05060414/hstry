@@ -74,6 +74,20 @@ mod default_config_tests {
         let config = Config::default();
         assert!(config.service.search_api);
     }
+
+    #[test]
+    fn standalone_does_not_prefer_hub_search() {
+        let config = Config::default();
+        assert!(!config.prefers_hub_search());
+    }
+
+    #[test]
+    fn satellite_with_hub_prefers_hub_search() {
+        let mut config = Config::default();
+        config.sync.mode = super::super::SyncMode::Satellite;
+        config.sync.hub_remote = Some("nas".into());
+        assert!(config.prefers_hub_search());
+    }
 }
 
 #[cfg(test)]

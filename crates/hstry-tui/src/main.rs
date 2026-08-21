@@ -971,6 +971,11 @@ impl App {
         let nav_items = build_source_nav_items(&sources);
 
         let filtered_conversations = conversations.clone();
+        let search_scope = if config.prefers_hub_search() {
+            SearchScope::Remote
+        } else {
+            SearchScope::Local
+        };
 
         Self {
             config,
@@ -988,7 +993,7 @@ impl App {
             search_results: Vec::new(),
             show_search_results: false,
             last_search_query: None,
-            search_scope: SearchScope::Local,
+            search_scope,
             left_pane_view: LeftPaneView::Sources,
             nav_items,
             nav_selection: Selection::default(),

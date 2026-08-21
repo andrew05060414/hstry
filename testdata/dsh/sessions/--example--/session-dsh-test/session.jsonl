@@ -1,0 +1,5 @@
+{"type":"session","version":0,"id":"session-dsh-test","createdAt":1750000000000,"cwd":"D:/Andrew/Code/example"}
+{"type":"user/message","seq":1,"time":1750000001000,"data":{"role":"user","content":"List the files in this repo"}}
+{"type":"assistant/message","seq":2,"time":1750000002000,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":"I will list the directory.","model":"deepseek-v4"}}}
+{"type":"tool/call","seq":3,"time":1750000003000,"data":{"turn":1,"step":1,"callId":"call-1","name":"bash","arguments":"{\"command\":\"ls\"}"}}
+{"type":"tool/result","seq":4,"time":1750000004000,"data":{"turn":1,"step":1,"message":{"role":"tool","name":"bash","content":"README.md\nCargo.toml"}}}

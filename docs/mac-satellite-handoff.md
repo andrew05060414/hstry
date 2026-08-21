@@ -150,8 +150,9 @@ ssh admin@memini-b506.tail76a98f.ts.net hstry stats
 
 ```bash
 hstry service start                                    # 登录后
-hstry search "关键词" --scope remote --remote nas
-hstry search "关键词" --scope all --remote nas          # staging + NAS
+hstry search "关键词"                    # satellite 默认打 hub
+hstry search "关键词" --scope local      # 只搜本机 staging
+hstry search "关键词" --scope all
 ```
 
 ---

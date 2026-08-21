@@ -64,6 +64,7 @@ search_api = true
 mode = "standalone"  # "standalone", "hub", or "satellite"
 # device_id = "my-machine"
 # hub_remote = "server"
+# Satellite `hstry search` defaults to this remote (trx-1xsa). Use --scope local for staging.
 auto_sync = false
 auto_sync_interval_secs = 300
 

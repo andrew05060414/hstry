@@ -198,8 +198,8 @@ Force a mode with `--mode natural` or `--mode code`.
 
 Scope and filters:
 
-- `--scope local|remote|all` (default: local)
-- `--remote <name>` to target specific remotes
+- `--scope local|remote|all` (satellite with `hub_remote` defaults to **remote**; otherwise local)
+- `--remote <name>` to target specific remotes (satellite default is `sync.hub_remote`)
 - `--source`, `--workspace`, `--role` filters
 - `--no-tools` to exclude tool calls
 - `--dedup` to collapse similar results
@@ -368,10 +368,11 @@ hstry-tui
 | `codex` | `~/.codex/sessions` | OpenAI Codex CLI |
 | `cursor` | `Cursor workspaceStorage` (platform-specific) | Cursor (state.vscdb) |
 | `opencode` | `~/.local/share/opencode` | OpenCode |
+| `dsh` | `~/.dsh/sessions` | DeepSeek Harness (`session.jsonl` / `.zstd`) |
 | `pi` | `~/.pi/agent/sessions` | Pi coding agent |
 | `qclaw` | `~/.qclaw/agents` | QClaw / OpenClaw (Pi-style JSONL) |
 | `workbuddy` | `~/.workbuddy/projects` | WorkBuddy (event JSONL; v1 skips subagents) |
-| `antigravity` | `~/.gemini/tmp` | Gemini CLI sessions (CLI-only v1) |
+| `antigravity` | `~/.gemini/tmp`, `~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.gemini/antigravity-ide` | Gemini CLI JSONL plus Antigravity 2.0 / agy / IDE 1 stores |
 | `aider` | Project directories | Aider (finds `.aider.chat.history.md`) |
 | `goose` | `~/.local/share/goose/sessions` | Goose (SQLite/JSONL) |
 | `jan` | `~/jan/threads` | Jan.ai |

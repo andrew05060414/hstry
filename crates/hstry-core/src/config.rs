@@ -435,6 +435,14 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Satellites should read the hub archive by default (trx-1xsa).
+    /// Standalone / hub keep local search.
+    pub fn prefers_hub_search(&self) -> bool {
+        self.sync.mode == SyncMode::Satellite && self.sync.hub_remote.is_some()
+    }
+}
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {

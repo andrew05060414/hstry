@@ -1,6 +1,7 @@
 # NAS Hub 多机部署手册（AI 可执行）
 
 > **用途**：在飞牛 NAS（Linux）+ Windows + Mac 上部署 hstry hub/satellite 架构。  
+> **产品合同**（备份/恢复/采集范围）：[`archive-model.md`](./archive-model.md)。  
 > **交给 AI 时**：把下方「变量表」填好，然后说「按 `docs/nas-hub-setup.md` 执行 Phase 1–4」。
 
 ---
@@ -13,11 +14,11 @@ Win / Mac（satellite）                飞牛 NAS（hub）
 读本机 Cursor/Codex/Pi/OpenCode…      存主库 hstry.db
   ↓ 解析 → 本地 staging.db（暂存）       service 常开
   ↓ push（每 5 min）                    mmry 定时导入
-搜索：--scope remote --remote nas  ←── SSH over Tailscale
+搜索：satellite 默认 `hstry search` 打 hub（trx-1xsa）；`--scope local` 只搜本机 staging
 ```
 
 - **采集必须在每台有 AI 工具的机器上做**（NAS 读不到 `%APPDATA%\Cursor`）。
-- **主库、搜索、备份、mmry 管道在 NAS**。
+- **主库、搜索、备份在 NAS**。云盘快照与本机 restore 见 [`restore.md`](./restore.md)。
 - 各机器数据用 `device_id` + remote 名前缀区分，**不会混成一团**。
 
 ---
@@ -418,11 +419,12 @@ hstry list --source codex-e50f7c87
 | Cursor                     | `cursor`      | `%APPDATA%\Cursor\User\globalStorage` | ✅ 已用 |
 | Codex                      | `codex`       | `~\.codex\archived_sessions`          | ✅      |
 | Claude Code                | `claude-code` | `~\.claude\projects`                  | ✅      |
-| OpenCode                   | `opencode`    | `~\.local\share\opencode`             | ✅      |
+| OpenCode                   | `opencode`    | `~\.local\share\opencode`             | ✅ adapter 已有；确认 source + sync |
+| DeepSeek Harness           | `dsh`         | `~\.dsh\sessions`                     | ✅ |
 | Pi                         | `pi`          | `~\.pi\agent\sessions`                | ✅      |
 | QClaw / OpenClaw           | `qclaw`       | `~\.qclaw\agents`                     | ✅ 已 sync（本机 98 会话） |
 | WorkBuddy                  | `workbuddy`   | `~\.workbuddy\projects`               | ✅ 已 sync（本机 36 会话；v1 跳过 subagents） |
-| Antigravity (Gemini CLI)   | `antigravity` | `~\.gemini\tmp`                       | ✅ CLI-only（本机 8 有对话会话 / 21 jsonl 文件） |
+| Antigravity 2.0 / agy / IDE 1 / 旧 CLI | `antigravity` | `~\.gemini\antigravity*` 与 `~\.gemini\tmp` | ✅ SQLite+JSONL |
 | Goose / Hermes / Aider / … | 各 adapter    | 见 `hstry adapters list`              | ✅ 有 adapter；本机 Hermes 会话目录目前为空 |
 | Gemini Export              | `gemini`      | Downloads/Desktop 导出 JSON           | ✅ adapter 只认 **导出文件**，不认 `~\.gemini\history` CLI 目录 |
 
