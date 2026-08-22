@@ -30,7 +30,7 @@ Win / Mac（satellite）                飞牛 NAS（hub）
 | `NAS_HOST`           | `admin@memini-b506.tail76a98f.ts.net`           | 推荐 Tailscale FQDN          |
 | `NAS_HOST_ALT`       | `admin@100.73.230.28` / `admin@memini-b506`     | 备选                         |
 | `NAS_ROOT`           | `/vol1/1000/Code/hstry backup`                  | 含空格，命令需加引号         |
-| `NAS_DB`             | `/vol1/1000/Code/hstry backup/hstry.db`         | Hub 主库                     |
+| `NAS_DB`             | `/vol1/1000/Code/hstry backup/hstry-win.db`     | Live hub（2026-08-22；仅服务在听这份）。同目录 `hstry.db` 是 Mac 冷档案，勿当 live |
 | `REMOTE_NAME`        | `nas`                                           | Win/Mac remote 固定名        |
 | `WIN_DEVICE_ID`      | `arknights`                                     | Windows satellite 标识（`sync.device_id`） |
 | `MAC_DEVICE_ID`      | `macbook`                                       | Mac satellite 标识           |
@@ -441,7 +441,7 @@ hstry list --source codex-e50f7c87
 | ~~P0 今晚~~ **done** | **qclaw** | ✅ `adapters/qclaw` | ✅ ~98 jsonl | `~\.qclaw\agents\*\sessions\*.jsonl` | **≪** | 2026-07-25 sync：98 会话 / 4144 消息 |
 | ~~P0 今晚~~ **done** | **workbuddy** | ✅ `adapters/workbuddy` | ✅ ~36 jsonl | `~\.workbuddy\projects\**\*.jsonl` | **<** | 2026-07-25 sync：36 会话；v1 跳过 subagents |
 | ~~P0 今晚~~ **done** | **antigravity** | ✅ `adapters/antigravity` CLI | ✅ 21 jsonl | `~\.gemini\tmp\*\chats\session-*.jsonl` | **<** | 2026-07-25 sync：8 有对话会话（其余为 CLI 日志-only）；IDE ChatSessionStore 仍空 |
-| P2 延后 | **zcode** | 无 | ✅ 弱/乱 | `tasks-index` 元数据 + `cli/rollout/model-io-*.jsonl` + `cli/db/db.sqlite` | **≈/?** | transcript 未闭合；今晚不做 |
+| ~~P2 延后~~ **done** | **zcode** | ✅ `adapters/zcode` | ✅ `~\.zcode\cli\db\db.sqlite` | session / message / part | **<** | 权威库是 SQLite，不是 transcript.jsonl |
 | — | **hermes** | ✅ | ❌ 空 | `~\.hermes\sessions` | — | 有 adapter 无数据 |
 | — | **gemini** | Export only | 忽略 | — | — | 用户确认不做 |
 | — | **opencode** | ✅ | ✅ | `~\.local\share\opencode` | — | 已 sync |

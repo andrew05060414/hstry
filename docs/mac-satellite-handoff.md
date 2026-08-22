@@ -1,49 +1,84 @@
-# Mac Satellite Handoff（交给 Mac worker）
+# Mac Satellite Handoff（直接交给 Mac 上的 AI）
 
-## 任务
-
-在 Mac 上安装 hstry **satellite**，采集本机 AI 聊天记录并 push 到 NAS Hub。
-
-## 已确认变量
-
-```bash
-NAS_SSH="admin@memini-b506.tail76a98f.ts.net"
-REMOTE_NAME="nas"
-DEVICE_ID="macbook"
-HSTRY_VERSION="1.0.0"
-STAGING_DB="$HOME/.local/share/hstry/staging.db"
-```
+把下面「PROMPT」整段复制给 Mac 上的 Cursor / Claude / Codex。不要改拓扑，不要合并两份 NAS 库。
 
 ---
 
-## Phase 1：安装
+## PROMPT
+
+```text
+你在 Andrew 的 Mac（device_id=macbook）上工作。把这台 Mac 做成 hstry 1.0.0 satellite：采集本机 AI 对话，merge push 到飞牛 NAS 的 live hub。
+
+用 Bash。不要装、不要调用 PowerShell。中文向我汇报。
+
+## 目标
+
+本机 staging.db 采集 → `hstry remote sync --direction push` → NAS live 库出现 `macbook:*` 源，且原有 `arknights:*` 仍在。
+
+## 非目标（禁止）
+
+- 不要把 NAS 上的 `hstry.db` 和 `hstry-win.db` 合成一份或互相覆盖。
+- 不要把 hub 整库拷到本机 staging.db 再 push（会双重命名空间或覆盖另一台机器）。
+- 不要改 NAS 的 `sync.mode`（必须保持 hub）。
+- 不要开启与 Windows 同时的 auto_sync。第一次成功 push 之前 `auto_sync = false`。
+- 不要恢复 / 覆盖本机 Cursor、Codex、Claude 的工作目录。
+- 不要提交 git、不要 push 到 GitHub，除非我明确说。
+
+## 已确认事实（2026-08-22）
+
+- NAS：`admin@memini-b506.tail76a98f.ts.net`（备选：局域网 `memini-b506` / `192.168.0.102`）
+- NAS 二进制：`hstry 1.0.0`（fork `andrew05060414/hstry`，`release/1.0` @ `f33b831`）
+- NAS live 配置：`~/.config/hstry/config.toml` 里
+  `database = "/vol1/1000/Code/hstry backup/hstry-win.db"`
+  `sync.mode = "hub"`
+- Live 库现状：仅 `arknights:*`，15 源 / 2768 会话 / 126047 消息
+- 同目录 `hstry.db`（195MB，8/16）是旧 Mac 冷档案。不是 live。不要 push 到它。
+- 仓库：https://github.com/andrew05060414/hstry  tag/branch `v1.0.0`
+- 本机 staging：`~/.local/share/hstry/staging.db`
+- 本机配置：`~/.config/hstry/config.toml`
+- Adapters：`~/.config/hstry/adapters`，`js_runtime = "node"`
+
+## 硬规则
+
+1. Mac `[[remotes]].database_path` 必须与 NAS `database=` 一字不差：
+   `/vol1/1000/Code/hstry backup/hstry-win.db`
+2. `[sync].device_id = "macbook"`，`mode = "satellite"`。
+3. 第一次 push 前：Windows 不能同时 auto push。若无法确认 Windows 已停 service / `auto_sync=false`，停止并问我，不要 push。
+4. 第一次 push 前在 NAS 上备份 live 库（路径含空格，必须加引号）。
+5. push 是 merge，不是上传覆盖。
+
+## 步骤
+
+### 0. 摸底（先读后写）
 
 ```bash
-# 依赖
-brew install node
-# hstry：brew install（若有 tap）或：
-# cargo install --git https://github.com/andrew05060414/hstry --tag v1.0.0 hstry-cli
-hstry -V    # → 1.0.0
+hstry -V || true
+which hstry node || true
+test -f ~/.config/hstry/config.toml && sed -n '1,120p' ~/.config/hstry/config.toml
+ssh -o BatchMode=yes admin@memini-b506.tail76a98f.ts.net echo OK || ssh memini-b506 echo OK
 ```
 
----
+SSH 不通就停，把错误贴给我。不要改 NAS 上的 database 路径。
 
-## Phase 2：Adapters
+### 1. 安装 hstry 1.0.0 + adapters
+
+`hstry -V` 必须是 `1.0.0`。否则：
 
 ```bash
-mkdir -p ~/.config/hstry/adapters
-# 从仓库复制或 git clone
-git clone --depth 1 --branch v1.0.0 https://github.com/andrew05060414/hstry /tmp/hstry
-cp -r /tmp/hstry/adapters/* ~/.config/hstry/adapters/
+# 已有 rustup 就用这个；没有再 brew install rust
+cargo install --git https://github.com/andrew05060414/hstry --tag v1.0.0 hstry-cli
+hstry -V   # → 1.0.0
+
+brew install node   # 若还没有
+mkdir -p ~/.config/hstry/adapters ~/.local/share/hstry
+git clone --depth 1 --branch v1.0.0 https://github.com/andrew05060414/hstry /tmp/hstry-1.0.0
+cp -R /tmp/hstry-1.0.0/adapters/. ~/.config/hstry/adapters/
 cd ~/.config/hstry/adapters && npm install
 ```
 
----
+### 2. 写本机 config
 
-## Phase 3：配置 `~/.config/hstry/config.toml`
-
-> **Mac 与 Windows 一样**：`[[remotes]]` 里必须写 Hub 主库绝对路径，否则会 push 到 NAS 默认的 `~/.local/share/hstry/hstry.db`（不存在）而失败。  
-> **Hub 主库**：`/vol1/1000/Code/hstry backup/hstry.db`（路径含空格，引号不能省）
+写入 `~/.config/hstry/config.toml`（若已有文件，先备份为 `config.toml.bak-$(date +%Y%m%d-%H%M%S)`）。`auto_sync` 第一次必须 false。
 
 ```toml
 database = "~/.local/share/hstry/staging.db"
@@ -57,14 +92,13 @@ remotes = []
 name = "nas"
 host = "admin@memini-b506.tail76a98f.ts.net"
 enabled = true
-# 必填 — 与 NAS ~/.config/hstry/config.toml 的 database= 一致
-database_path = "/vol1/1000/Code/hstry backup/hstry.db"
+database_path = "/vol1/1000/Code/hstry backup/hstry-win.db"
 
 [sync]
 mode = "satellite"
 device_id = "macbook"
 hub_remote = "nas"
-auto_sync = true
+auto_sync = false
 auto_sync_interval_secs = 300
 
 [service]
@@ -74,127 +108,93 @@ search_api = true
 transport = "tcp"
 ```
 
----
+Tailscale SSH 要浏览器验证时，把 `host` 改成 `memini-b506`（若 `~/.ssh/config` 已有局域网别名）。
 
-## Phase 4：SSH 密钥（免密 push）
+### 3. SSH 免密（若第 0 步 BatchMode 失败）
 
 ```bash
-# 若还没有密钥
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
-
-# 拷公钥到 NAS（会提示输入 NAS 密码，一次即可）
+test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
 ssh-copy-id admin@memini-b506.tail76a98f.ts.net
-
-# 验证
 ssh admin@memini-b506.tail76a98f.ts.net echo OK
 ```
 
----
-
-## Phase 4.5：去重（push 前建议）
-
-与 Windows 相同：多个 Cursor source 会重复；旧版 push 前缀是 `local:`，需用 `device_id` 重推。
+### 4. NAS 上备份 live 库
 
 ```bash
-hstry dedup --cross-source
-hstry source prune-cursor --auto-remove   # 只留 globalStorage 的 cursor source
-hstry source list
+ssh admin@memini-b506.tail76a98f.ts.net 'cd "/vol1/1000/Code/hstry backup" && cp -a hstry-win.db "hstry-win.db.pre-mac-push-$(date +%Y%m%d-%H%M%S)" && ls -l hstry-win.db hstry-win.db.pre-mac-push-* | tail'
 ```
 
-**push 前确认 Windows 没在同时 push**（`auto_sync` 串行），否则 Hub `hstry.db` 会损坏。
+确认 `hstry.db` 和 `hstry-win.db` 都还在、体积没变成 0。
 
----
+### 5. 本机采集
 
-## Phase 5：数据源 + 启动
+只 add 实际存在的目录：
 
 ```bash
-mkdir -p ~/.local/share/hstry
-
 hstry scan
-
-hstry source add ~/Library/Application\ Support/Cursor/User/globalStorage
-hstry source add ~/.codex/archived_sessions
-hstry source add ~/.claude/projects
-hstry source add ~/.local/share/opencode
-hstry source add ~/.pi/agent/sessions
+hstry source add "$HOME/Library/Application Support/Cursor/User/globalStorage"
+hstry source add "$HOME/.codex/archived_sessions"
+hstry source add "$HOME/.claude/projects"
+hstry source add "$HOME/.local/share/opencode"
+hstry source add "$HOME/.pi/agent/sessions"
+# 目录不存在就跳过，不要编路径
 
 hstry source list
-
-hstry service start
+hstry dedup --cross-source || true
+hstry source prune-cursor --auto-remove || true
 hstry sync
-
-hstry remote add nas admin@memini-b506.tail76a98f.ts.net   # 若已存在可跳过
-hstry remote test nas
-hstry remote sync --remote nas --direction push
+hstry stats
 ```
 
----
-
-## Phase 6：验收
+### 6. Push（确认 Windows 已停自动推之后才做）
 
 ```bash
-hstry service status          # running
-hstry stats                   # 本机 staging 有数据
+hstry remote test nas
+hstry remote sync --remote nas --direction push -v
+```
+
+`-v` 里必须能看出 fetch 的是 `hstry-win.db`，而不是空库或 `hstry.db`。若出现对空库跑 `001_initial_schema`，立刻停，不要继续 upload。
+
+### 7. 验收（把输出原样贴回）
+
+本机：
+
+```bash
+hstry -V
+hstry service status || true
+hstry stats
+hstry source list
 hstry search "test" --scope remote --remote nas --limit 3
 ```
 
-在 NAS 上应能看到 `macbook:cursor-*` 等 source（`sync.device_id` 作为 push 前缀；旧版误用 `local:` 需在该 Mac 上重推一次）。
+NAS：
 
 ```bash
 ssh admin@memini-b506.tail76a98f.ts.net hstry stats
+ssh admin@memini-b506.tail76a98f.ts.net hstry source list
+```
+
+通过标准：
+
+- 本机 `hstry -V` = 1.0.0
+- config 里 `database_path` 指向 `hstry-win.db`
+- NAS `hstry stats` 同时有 `arknights:*` 和 `macbook:*`
+- `arknights` 会话数不应从 2768 掉成接近 0
+- 两份 NAS 库文件都还在（`hstry.db` 与 `hstry-win.db`）
+
+第一次 push 成功前不要把 `auto_sync` 改成 true，不要写 LaunchAgent。
+
+## 汇报格式
+
+1. 做了什么（安装 / 改 config / 采集 / push）
+2. 关键命令输出（`hstry -V`、config 里 database_path、本机 stats、NAS stats / source list 摘要）
+3. 未做或跳过的 source
+4. 风险或没做的事（Windows 是否已停 push、auto_sync 仍为 false）
 ```
 
 ---
 
-## 日常使用
+## 本地对照（Mac worker 不需要再读也能干）
 
-```bash
-hstry service start                                    # 登录后
-hstry search "关键词"                    # satellite 默认打 hub
-hstry search "关键词" --scope local      # 只搜本机 staging
-hstry search "关键词" --scope all
-```
-
----
-
-## 开机自启（可选）
-
-`~/Library/LaunchAgents/com.hstry.service.plist`：
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.hstry.service</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/opt/homebrew/bin/hstry</string>
-    <string>service</string>
-    <string>start</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-</dict>
-</plist>
-```
-
-路径按实际 `which hstry` 调整。
-
----
-
-## 完整文档
-
-- 个人部署手册：`docs/nas-hub-setup.md`
-- 分支 / 上游拆分：`docs/andrew-nas-branch-notes.md`
-- 通用 sync 说明（可 PR upstream）：`docs/remote-sync.md`
-
-### SSH 备选（在家）
-
-Tailscale SSH 若要求浏览器验证，可临时把 `[[remotes]].host` 改为局域网别名（`~/.ssh/config` 里已配置 `Host memini-b506` → `192.168.0.102`）。外出再改回 `admin@memini-b506.tail76a98f.ts.net`。
-
-### Push 验收
-
-```bash
-ssh admin@memini-b506.tail76a98f.ts.net hstry stats
-# 应看到 macbook:* 与 arknights:* 并存
-```
+更完整的多机手册：[`nas-hub-setup.md`](./nas-hub-setup.md)。  
+push 语义：[`remote-sync.md`](./remote-sync.md)。

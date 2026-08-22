@@ -23,7 +23,7 @@
 
 | 层 | 职责 | 1.0 现状 | 1.x |
 |----|------|----------|-----|
-| 采集 | 各工具对话 → 规范化会话 | Cursor/Codex/… + **Antigravity 三根** + **dsh** | 本机没有数据的工具不预做 |
+| 采集 | 各工具对话 → 规范化会话 | Cursor/Codex/… + **Antigravity 三根** + **dsh** + **zcode** | 本机没有数据的工具不预做 |
 | 档案 | 一台机一份 staging，NAS 一份合并 hub | `device_id` 命名空间 merge | 保持 dumb：不抽取记忆 |
 | 备份/恢复 | hub 库的时间点副本；在目标电脑恢复后能搜 | push 是 merge，不是备份 | 见 [`restore.md`](./restore.md) |
 | 检索 | 跨工具、跨设备搜 | CLI FTS + Search API | **satellite 默认问 hub** |
@@ -85,7 +85,7 @@
 
 ### 缺口（本机有数据）— 1.1 已补
 
-同一 `antigravity` adapter 现在登记四个 canonical root（旧 tmp JSONL 仍保留）。`dsh` 读 `~\.dsh\sessions`。OpenCode 不重写解析器，只做 source + sync 回归。
+同一 `antigravity` adapter 现在登记四个 canonical root（旧 tmp JSONL 仍保留）。`dsh` 读 `~\.dsh\sessions`。`zcode` 读 `~\.zcode\cli\db\db.sqlite`。OpenCode 不重写解析器，只做 source + sync 回归。
 
 Antigravity 现在是 **三套独立会话库**，现有 adapter 一个都没读：
 
@@ -104,6 +104,14 @@ DeepSeek Harness（`dsh`）：
 | **dsh 会话** | `~\.dsh\sessions\<workspace-slug>\session-<uuid>\session.jsonl.zstd` | 约 40 个会话（pxread 最多） | zstd 压缩 JSONL（magic `28 B5 2F FD`） |
 | 旧 `~\.deepseek\sessions` | 空 | 忽略 | 不是现在这条 harness |
 
+Zcode / ZAI：
+
+| 表面 | 本机路径 | 规模 | 格式 |
+|------|----------|------|------|
+| **Zcode CLI** | `~\.zcode\cli\db\db.sqlite` | 本机约 27 session / 1410 message（2026-08-21） | SQLite `session` + `message.data` + `part.data`（OpenCode 同款） |
+
+`cli/agents/*/transcript.jsonl` 是流式 delta，不是权威正文。
+
 可参考、不要整仓合入：
 
 - [agy-reader](https://github.com/mjacobs/agy-reader)（MIT）：2.0 / CLI 同 schema；daemon RPC 解密旧 `.pb`
@@ -118,7 +126,7 @@ DeepSeek Harness（`dsh`）：
 1. **Antigravity 会话库** — 已做：`antigravity` 三个 store root + 旧 tmp JSONL。
 2. **DeepSeek Harness** — 已做：`dsh` / `~\.dsh\sessions`。
 3. **OpenCode 回归** — adapter 已有；确认 source + sync。
-4. 再按「本机还有目录、还在写」补。没有数据的不预做。
+4. 再按「本机还有目录、还在写」补。没有数据的不预做。 **Zcode 已补**：`zcode` / `~\.zcode`。
 
 TUI overhaul、cursor harden、Drive 快照脚本：**不挡**上面 1–3。快照脚本在主力源能 sync 之后补。
 

@@ -14,6 +14,7 @@ Upstream last consumed here is `v0.5.21` (`c8923f1`). Upstream `v0.5.22` (TUI ov
 
 - Antigravity 2.0 app, agy CLI, and IDE 1 stores (`~/.gemini/antigravity*`, SQLite + brain transcript). Legacy `~/.gemini/tmp` JSONL remains.
 - DeepSeek Harness adapter (`dsh`) for `~/.dsh/sessions` (`session.jsonl` / concatenated zstd).
+- Zcode / ZAI adapter (`zcode`) for `~/.zcode` (`cli/db/db.sqlite` session / message / part).
 - Restore runbook: [docs/restore.md](docs/restore.md) (hub snapshots to Google Drive; search-only restore on this PC).
 
 ### Changed

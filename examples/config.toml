@@ -141,6 +141,7 @@ session_dir = "~/.local/share/goose/sessions"
 # | codex       | ~/.codex/sessions                      | OpenAI Codex CLI sessions       |
 # | hermes      | ~/.hermes/sessions                     | Hermes Agent sessions           |
 # | opencode    | ~/.local/share/opencode                | OpenCode sessions               |
+# | zcode       | ~/.zcode                               | Zcode / ZAI (cli/db/db.sqlite)  |
 # | pi          | ~/.pi/agent/sessions                   | Pi coding agent sessions        |
 # | aider       | ~/projects, ~/work, ~/src              | .aider.chat.history.md files    |
 # | chatgpt     | ~/Downloads                            | ChatGPT export (conversations.json) |
@@ -174,6 +175,12 @@ auto_sync = true
 id = "opencode"
 adapter = "opencode"
 path = "~/.local/share/opencode"
+auto_sync = true
+
+[[sources]]
+id = "zcode"
+adapter = "zcode"
+path = "~/.zcode"
 auto_sync = true
 
 [[sources]]

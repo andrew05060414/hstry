@@ -373,6 +373,7 @@ hstry-tui
 | `qclaw` | `~/.qclaw/agents` | QClaw / OpenClaw (Pi-style JSONL) |
 | `workbuddy` | `~/.workbuddy/projects` | WorkBuddy (event JSONL; v1 skips subagents) |
 | `antigravity` | `~/.gemini/tmp`, `~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.gemini/antigravity-ide` | Gemini CLI JSONL plus Antigravity 2.0 / agy / IDE 1 stores |
+| `zcode` | `~/.zcode` | Zcode / ZAI (`cli/db/db.sqlite`) |
 | `aider` | Project directories | Aider (finds `.aider.chat.history.md`) |
 | `goose` | `~/.local/share/goose/sessions` | Goose (SQLite/JSONL) |
 | `jan` | `~/jan/threads` | Jan.ai |
