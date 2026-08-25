@@ -98,7 +98,7 @@ database_path = "/vol1/1000/Code/hstry backup/hstry-win.db"
 mode = "satellite"
 device_id = "macbook"
 hub_remote = "nas"
-auto_sync = false
+auto_sync = true
 auto_sync_interval_secs = 300
 
 [service]

@@ -4,6 +4,7 @@
 //! managing chat history from multiple AI sources (ChatGPT, Claude, Gemini,
 //! OpenCode, Cursor, etc.)
 
+pub mod checkpoint;
 pub mod config;
 pub mod db;
 pub mod error;

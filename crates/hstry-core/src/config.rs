@@ -60,6 +60,10 @@ pub struct Config {
     /// Storage knobs (message_events log, indexer outbox, etc.).
     #[serde(default)]
     pub storage: StorageConfig,
+
+    /// Rolling hub checkpoints. Off by default (satellites do not snapshot).
+    #[serde(default)]
+    pub checkpoint: CheckpointConfig,
 }
 
 /// Storage-level knobs that control optional bookkeeping tables.
@@ -431,6 +435,7 @@ impl Default for Config {
             web: WebConfig::default(),
             resume: ResumeConfig::default(),
             storage: StorageConfig::default(),
+            checkpoint: CheckpointConfig::default(),
         }
     }
 }
@@ -578,6 +583,47 @@ fn default_hostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+/// Rolling SQLite checkpoints for a hub archive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CheckpointConfig {
+    /// Create and prune checkpoints from the hub service loop.
+    pub enabled: bool,
+    /// Directory for `.db.zst` files and manifests. Default: `<database-dir>/checkpoints`.
+    pub dir: Option<PathBuf>,
+    /// Minimum time between automatic checkpoints (seconds).
+    pub interval_secs: u64,
+    /// Maximum total size of compressed checkpoints (bytes).
+    pub max_total_bytes: u64,
+    /// Weekly-tagged checkpoints to keep even when pruning dailies.
+    pub keep_weekly: usize,
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: None,
+            interval_secs: 86_400,
+            max_total_bytes: 10 * 1024 * 1024 * 1024,
+            keep_weekly: 4,
+        }
+    }
+}
+
+impl CheckpointConfig {
+    /// Resolve the checkpoint directory, defaulting next to the live database.
+    pub fn resolve_dir(&self, database: &Path) -> PathBuf {
+        if let Some(ref dir) = self.dir {
+            return crate::Config::expand_path(&dir.to_string_lossy());
+        }
+        database
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("checkpoints")
+    }
+}
+
 impl SyncConfig {
     /// Namespace used when pushing a satellite database to a hub.
     ///
@@ -671,6 +717,9 @@ impl Config {
             .iter()
             .map(|p| Self::expand_path(p).to_string_lossy().to_string())
             .collect();
+        if let Some(ref dir) = self.checkpoint.dir {
+            self.checkpoint.dir = Some(Self::expand_path(&dir.to_string_lossy()));
+        }
         self.sources = self
             .sources
             .iter()

@@ -644,6 +644,9 @@ impl Database {
         if opts.before.is_some() {
             sql.push_str(" AND created_at < ?");
         }
+        if opts.updated_after.is_some() {
+            sql.push_str(" AND COALESCE(updated_at, created_at) >= ?");
+        }
 
         sql.push_str(" ORDER BY COALESCE(updated_at, created_at) DESC");
 
@@ -664,6 +667,9 @@ impl Database {
         }
         if let Some(before) = opts.before {
             query = query.bind(before.timestamp());
+        }
+        if let Some(updated_after) = opts.updated_after {
+            query = query.bind(updated_after.timestamp());
         }
 
         let rows = query.fetch_all(&self.pool).await?;
@@ -987,6 +993,45 @@ impl Database {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| (r.get("version"), r.get("message_count"))))
+    }
+
+    /// Run `PRAGMA integrity_check` and return the first result row.
+    pub async fn integrity_check(&self) -> Result<String> {
+        let row = sqlx::query("PRAGMA integrity_check")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.get::<String, _>(0))
+    }
+
+    /// Consistent online copy of this database via `VACUUM INTO`.
+    pub async fn backup_to(&self, dest: &Path) -> Result<()> {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if dest.exists() {
+            std::fs::remove_file(dest)?;
+        }
+        let dest_str = dest.to_string_lossy().replace('\'', "''");
+        sqlx::query(&format!("VACUUM INTO '{dest_str}'"))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get message count.
+    pub async fn count_messages(&self) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count.0)
+    }
+
+    /// Get source count.
+    pub async fn count_sources(&self) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sources")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count.0)
     }
 
     /// Get conversation count.
@@ -1857,14 +1902,6 @@ impl Database {
                 .bind(conversation_id.to_string())
                 .fetch_one(&self.pool)
                 .await?;
-        Ok(count.0)
-    }
-
-    /// Get message count.
-    pub async fn count_messages(&self) -> Result<i64> {
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages")
-            .fetch_one(&self.pool)
-            .await?;
         Ok(count.0)
     }
 
@@ -3108,6 +3145,10 @@ pub struct ListConversationsOptions {
     pub workspace: Option<String>,
     pub after: Option<chrono::DateTime<Utc>>,
     pub before: Option<chrono::DateTime<Utc>>,
+    /// Conversations whose `updated_at` (falling back to `created_at`) is at
+    /// least this timestamp. Used by satellite delta export so continued
+    /// sessions are not missed.
+    pub updated_after: Option<chrono::DateTime<Utc>>,
     pub limit: Option<i64>,
 }
 

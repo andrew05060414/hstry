@@ -580,6 +580,7 @@ impl ReadService for ServerState {
                 },
                 after: None,
                 before: None,
+                updated_after: None,
                 limit: if request.limit > 0 {
                     Some(request.limit)
                 } else {
@@ -872,6 +873,7 @@ async fn run_service(config_path: &Path) -> Result<()> {
     state.refresh_watches().await?;
 
     state.sync_all().await?;
+    state.checkpoint_if_due().await?;
 
     let safety_poll_secs = state.config.service.poll_interval_secs.max(300);
     let mut tick = interval(Duration::from_secs(safety_poll_secs));
@@ -897,6 +899,7 @@ async fn run_service(config_path: &Path) -> Result<()> {
                 debounce_deadline = None;
                 pending_paths.clear();
                 state.sync_all().await?;
+                state.checkpoint_if_due().await?;
             }
             Some(event_path) = state.event_rx.recv() => {
                 pending_paths.push(event_path);
@@ -1333,6 +1336,47 @@ impl ServiceState {
         Ok(())
     }
 
+    async fn checkpoint_if_due(&self) -> Result<()> {
+        if self.config.sync.mode != hstry_core::config::SyncMode::Hub {
+            return Ok(());
+        }
+        if !self.config.checkpoint.enabled {
+            return Ok(());
+        }
+        let dir = self.config.checkpoint.resolve_dir(&self.config.database);
+        match hstry_core::checkpoint::checkpoint_due(&dir, self.config.checkpoint.interval_secs) {
+            Ok(false) => return Ok(()),
+            Ok(true) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, "checkpoint due-check failed");
+                return Ok(());
+            }
+        }
+        match hstry_core::checkpoint::create_checkpoint(
+            &self.db,
+            &self.config.database,
+            &self.config.checkpoint,
+            None,
+        )
+        .await
+        {
+            Ok(created) => {
+                tracing::info!(
+                    stem = %created.manifest.stem,
+                    bytes = created.manifest.compressed_bytes,
+                    "hub checkpoint created"
+                );
+                if let Err(err) =
+                    hstry_core::checkpoint::prune_checkpoints(&dir, &self.config.checkpoint)
+                {
+                    tracing::warn!(error = %err, "hub checkpoint prune failed");
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "hub checkpoint failed"),
+        }
+        Ok(())
+    }
+
     async fn sync_remotes_if_due(&mut self) -> Result<()> {
         if !self.config.sync.auto_sync {
             return Ok(());
@@ -1371,9 +1415,11 @@ impl ServiceState {
                         .map(|_| ())
                 }
                 hstry_core::remote::SyncDirection::Push => hstry_core::remote::sync_to_remote(
+                    &self.db,
                     &self.config.database,
                     remote_config,
                     &self.config.sync.device_namespace(),
+                    false,
                 )
                 .await
                 .map(|_| ()),

@@ -66,6 +66,13 @@ transport = "tcp"
 [sync]
 mode = "hub"
 auto_sync = false
+
+[checkpoint]
+enabled = true
+dir = "/vol1/1000/Code/hstry backup/checkpoints"
+interval_secs = 86400
+max_total_bytes = 10737418240
+keep_weekly = 4
 EOF
 
 # 5. adapter 依赖

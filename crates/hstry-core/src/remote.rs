@@ -2,6 +2,7 @@
 //!
 //! Provides fetching and bidirectional merging of hstry databases across machines.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -51,7 +52,7 @@ pub struct FetchResult {
 }
 
 /// Result of a sync/merge operation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResult {
     pub remote_name: String,
     pub conversations_added: usize,
@@ -530,6 +531,120 @@ pub async fn merge_databases(
     })
 }
 
+/// Result of exporting a satellite delta sqlite.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeltaExport {
+    pub conversations: usize,
+    pub messages: usize,
+    pub sources: usize,
+    pub empty: bool,
+}
+
+pub fn push_watermark_key(remote_name: &str) -> String {
+    format!("push_watermark:{remote_name}")
+}
+
+pub fn parse_watermark(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Copy conversations/sources changed since `updated_after` into `dest_path`.
+pub async fn export_delta(
+    source: &Database,
+    dest_path: &Path,
+    updated_after: Option<DateTime<Utc>>,
+) -> Result<DeltaExport> {
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if dest_path.exists() {
+        std::fs::remove_file(dest_path)?;
+    }
+
+    let dest = Database::open(dest_path).await?;
+    let convs = source
+        .list_conversations(crate::db::ListConversationsOptions {
+            updated_after,
+            ..Default::default()
+        })
+        .await?;
+    let conv_source_ids: HashSet<String> = convs.iter().map(|c| c.source_id.clone()).collect();
+    let all_sources = source.list_sources().await?;
+    let sources_to_copy: Vec<_> = all_sources
+        .into_iter()
+        .filter(|s| {
+            if updated_after.is_none() {
+                return true;
+            }
+            if conv_source_ids.contains(&s.id) {
+                return true;
+            }
+            match (s.last_sync_at, updated_after) {
+                (Some(ts), Some(watermark)) => ts >= watermark,
+                _ => false,
+            }
+        })
+        .collect();
+
+    if convs.is_empty() && sources_to_copy.is_empty() {
+        dest.close().await;
+        let _ = std::fs::remove_file(dest_path);
+        return Ok(DeltaExport {
+            conversations: 0,
+            messages: 0,
+            sources: 0,
+            empty: true,
+        });
+    }
+
+    for source_row in &sources_to_copy {
+        dest.upsert_source(source_row).await?;
+    }
+
+    let mut messages = 0usize;
+    for conv in &convs {
+        dest.upsert_conversation(conv).await?;
+        for msg in source.get_messages(conv.id).await? {
+            dest.insert_message(&msg).await?;
+            messages += 1;
+        }
+    }
+
+    dest.close().await;
+    Ok(DeltaExport {
+        conversations: convs.len(),
+        messages,
+        sources: sources_to_copy.len(),
+        empty: false,
+    })
+}
+
+/// Merge a satellite delta into the live hub database under `namespace`.
+pub async fn ingest_into_hub(
+    hub: &Database,
+    delta_path: &Path,
+    namespace: &str,
+    lock_path: &Path,
+) -> Result<SyncResult> {
+    let _lock = crate::checkpoint::acquire_ingest_lock(lock_path)?;
+    let mut result = merge_databases(hub, delta_path, namespace).await?;
+    result.direction = SyncDirection::Push;
+    Ok(result)
+}
+
+fn remote_parent_dir(remote_db_path: &str) -> String {
+    match remote_db_path.rfind('/') {
+        Some(idx) if idx > 0 => remote_db_path[..idx].to_string(),
+        _ => ".".to_string(),
+    }
+}
+
+fn remote_inbox_dir(remote_db_path: &str) -> String {
+    format!("{}/inbox", remote_parent_dir(remote_db_path))
+}
+
 /// Full sync operation: fetch remote DB and merge into local.
 pub async fn sync_from_remote(
     local_db: &Database,
@@ -545,29 +660,140 @@ pub async fn sync_from_remote(
     Ok((fetch_result, sync_result))
 }
 
-/// Push local database to remote and merge.
+/// Push local staging into the hub.
+///
+/// Default path exports a delta sqlite, SCPs it to the hub inbox, and runs
+/// `hstry hub ingest` on the remote so the live file is never overwritten.
+/// `--full` keeps the legacy fetch/merge/SCP-replace path for disaster recovery.
 pub async fn sync_to_remote(
+    local_db: &Database,
+    local_db_path: &Path,
+    config: &RemoteConfig,
+    device_namespace: &str,
+    full: bool,
+) -> Result<SyncResult> {
+    if full {
+        return sync_to_remote_full(local_db_path, config, device_namespace).await;
+    }
+
+    let transport = SshTransport::from_config(config);
+    transport.test_connection()?;
+
+    let namespace = crate::config::sanitize_device_namespace(device_namespace);
+    let watermark = match local_db
+        .get_search_state(&push_watermark_key(&config.name))
+        .await?
+    {
+        Some(raw) => parse_watermark(&raw),
+        None => None,
+    };
+    let export_started = Utc::now();
+
+    let temp_dir = tempfile::tempdir()?;
+    let delta_path = temp_dir.path().join("delta.db");
+    let export = export_delta(local_db, &delta_path, watermark).await?;
+    if export.empty {
+        local_db
+            .set_search_state(
+                &push_watermark_key(&config.name),
+                &export_started.to_rfc3339(),
+            )
+            .await?;
+        return Ok(SyncResult {
+            remote_name: config.name.clone(),
+            conversations_added: 0,
+            conversations_updated: 0,
+            messages_added: 0,
+            sources_added: 0,
+            sources_updated: 0,
+            direction: SyncDirection::Push,
+        });
+    }
+
+    let remote_db_path = config
+        .database_path
+        .as_deref()
+        .unwrap_or(DEFAULT_REMOTE_DB_PATH);
+    let expanded_path = transport.expand_remote_path(remote_db_path)?;
+    let inbox = remote_inbox_dir(&expanded_path);
+    transport.exec(&format!("mkdir -p {}", shell_quote(&inbox)))?;
+
+    let remote_delta = format!(
+        "{inbox}/{namespace}-{}.db",
+        export_started.timestamp_millis()
+    );
+    transport.push_file(&delta_path, &remote_delta)?;
+
+    let ingest_cmd = format!(
+        "hstry --json hub ingest --file {} --namespace {} --delete",
+        shell_quote(&remote_delta),
+        shell_quote(&namespace)
+    );
+    let stdout = match transport.exec(&ingest_cmd) {
+        Ok(s) => s,
+        Err(err) => {
+            let msg = err.to_string();
+            let hub_too_old = msg.contains("unrecognized subcommand")
+                || msg.contains("unexpected argument 'hub'")
+                || msg.contains("command not found");
+            if hub_too_old {
+                tracing::warn!(
+                    error = %msg,
+                    "hub ingest not available on remote; falling back to whole-file push"
+                );
+                let _ = transport.exec(&format!("rm -f {}", shell_quote(&remote_delta)));
+                return sync_to_remote_full(local_db_path, config, device_namespace).await;
+            }
+            return Err(err);
+        }
+    };
+    let response: JsonResponse<SyncResult> = serde_json::from_str(stdout.trim()).map_err(|e| {
+        Error::Remote(format!(
+            "Failed parsing hub ingest response: {e}; stdout={}",
+            stdout.trim()
+        ))
+    })?;
+    if !response.ok {
+        return Err(Error::Remote(
+            response
+                .error
+                .unwrap_or_else(|| "hub ingest failed".to_string()),
+        ));
+    }
+    let mut sync_result = response
+        .result
+        .ok_or_else(|| Error::Remote("hub ingest returned ok without a result".to_string()))?;
+    sync_result.remote_name = config.name.clone();
+    sync_result.direction = SyncDirection::Push;
+
+    local_db
+        .set_search_state(
+            &push_watermark_key(&config.name),
+            &export_started.to_rfc3339(),
+        )
+        .await?;
+
+    Ok(sync_result)
+}
+
+/// Legacy push: fetch hub, merge locally, SCP the whole file back.
+pub async fn sync_to_remote_full(
     local_db_path: &Path,
     config: &RemoteConfig,
     device_namespace: &str,
 ) -> Result<SyncResult> {
     let transport = SshTransport::from_config(config);
-
-    // Test connection
     transport.test_connection()?;
 
-    // Determine paths
     let remote_db_path = config
         .database_path
         .as_deref()
         .unwrap_or(DEFAULT_REMOTE_DB_PATH);
     let expanded_path = transport.expand_remote_path(remote_db_path)?;
 
-    // Create a temporary merged database
     let temp_dir = tempfile::tempdir()?;
     let temp_db_path = temp_dir.path().join("merged.db");
 
-    // If remote DB exists, fetch it first so we merge instead of replacing the hub.
     let remote_exists = transport.file_exists(&expanded_path)?;
     if remote_exists {
         transport.fetch_file(&expanded_path, &temp_db_path)?;
@@ -584,16 +810,18 @@ pub async fn sync_to_remote(
         );
     }
 
-    // Open/create the temp database
     let temp_db = Database::open(&temp_db_path).await?;
-
     let namespace = crate::config::sanitize_device_namespace(device_namespace);
     let sync_result = merge_databases(&temp_db, local_db_path, &namespace).await?;
-
     temp_db.close().await;
 
-    // Push back to remote
-    transport.push_file(&temp_db_path, &expanded_path)?;
+    let incoming = format!("{expanded_path}.incoming");
+    transport.push_file(&temp_db_path, &incoming)?;
+    transport.exec(&format!(
+        "mv -f {} {}",
+        shell_quote(&incoming),
+        shell_quote(&expanded_path)
+    ))?;
 
     Ok(SyncResult {
         remote_name: config.name.clone(),
@@ -1008,6 +1236,271 @@ mod tests {
         };
 
         assert!(merge_source_metadata(&existing, &incoming).is_none());
+    }
+
+    #[tokio::test]
+    async fn export_delta_skips_conversations_older_than_watermark() {
+        use crate::models::{MessageRole, Source};
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.db");
+        let src = Database::open(&src_path).await.unwrap();
+        let source = Source {
+            id: "cursor-abc".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win/cursor".to_string()),
+            last_sync_at: Some(Utc::now()),
+            config: serde_json::json!({}),
+        };
+        src.upsert_source(&source).await.unwrap();
+
+        let old_ts = Utc::now() - chrono::Duration::days(2);
+        let old_conv = Conversation {
+            id: Uuid::new_v4(),
+            source_id: source.id.clone(),
+            external_id: Some("old".to_string()),
+            readable_id: None,
+            platform_id: None,
+            title: Some("old".to_string()),
+            created_at: old_ts,
+            updated_at: Some(old_ts),
+            model: None,
+            provider: None,
+            workspace: None,
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            harness: None,
+            version: 0,
+            message_count: 0,
+            parent_conversation_id: None,
+            parent_message_idx: None,
+            fork_type: None,
+        };
+        src.upsert_conversation(&old_conv).await.unwrap();
+        src.insert_message(&Message {
+            id: Uuid::new_v4(),
+            conversation_id: old_conv.id,
+            idx: 0,
+            role: MessageRole::User,
+            content: "old".to_string(),
+            parts_json: serde_json::json!({}),
+            created_at: Some(old_ts),
+            model: None,
+            tokens: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            sender: None,
+            provider: None,
+            harness: None,
+            client_id: None,
+        })
+        .await
+        .unwrap();
+
+        let new_ts = Utc::now();
+        let new_conv = Conversation {
+            id: Uuid::new_v4(),
+            source_id: source.id.clone(),
+            external_id: Some("new".to_string()),
+            readable_id: None,
+            platform_id: None,
+            title: Some("new".to_string()),
+            created_at: new_ts,
+            updated_at: Some(new_ts),
+            model: None,
+            provider: None,
+            workspace: None,
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            harness: None,
+            version: 0,
+            message_count: 0,
+            parent_conversation_id: None,
+            parent_message_idx: None,
+            fork_type: None,
+        };
+        src.upsert_conversation(&new_conv).await.unwrap();
+        src.insert_message(&Message {
+            id: Uuid::new_v4(),
+            conversation_id: new_conv.id,
+            idx: 0,
+            role: MessageRole::User,
+            content: "new".to_string(),
+            parts_json: serde_json::json!({}),
+            created_at: Some(new_ts),
+            model: None,
+            tokens: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            sender: None,
+            provider: None,
+            harness: None,
+            client_id: None,
+        })
+        .await
+        .unwrap();
+
+        let watermark = Utc::now() - chrono::Duration::hours(1);
+        let delta_path = dir.path().join("delta.db");
+        let export = export_delta(&src, &delta_path, Some(watermark))
+            .await
+            .unwrap();
+        assert_eq!(export.conversations, 1);
+        src.close().await;
+
+        let delta = Database::open(&delta_path).await.unwrap();
+        let convs = delta
+            .list_conversations(crate::db::ListConversationsOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(convs.len(), 1);
+        assert_eq!(convs[0].external_id.as_deref(), Some("new"));
+        delta.close().await;
+    }
+
+    #[tokio::test]
+    async fn ingest_two_namespaces_without_clobbering() {
+        use crate::models::{MessageRole, Source};
+
+        let dir = tempfile::tempdir().unwrap();
+        let hub_path = dir.path().join("hub.db");
+        let hub = Database::open(&hub_path).await.unwrap();
+
+        let win_dir = tempfile::tempdir().unwrap();
+        let win_path = win_dir.path().join("win.db");
+        let win = Database::open(&win_path).await.unwrap();
+        let win_source = Source {
+            id: "cursor-win".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/win".to_string()),
+            last_sync_at: Some(Utc::now()),
+            config: serde_json::json!({}),
+        };
+        win.upsert_source(&win_source).await.unwrap();
+        let win_conv = Conversation {
+            id: Uuid::new_v4(),
+            source_id: win_source.id.clone(),
+            external_id: Some("win-1".to_string()),
+            readable_id: None,
+            platform_id: None,
+            title: Some("win".to_string()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
+            model: None,
+            provider: None,
+            workspace: None,
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            harness: None,
+            version: 0,
+            message_count: 0,
+            parent_conversation_id: None,
+            parent_message_idx: None,
+            fork_type: None,
+        };
+        win.upsert_conversation(&win_conv).await.unwrap();
+        win.insert_message(&Message {
+            id: Uuid::new_v4(),
+            conversation_id: win_conv.id,
+            idx: 0,
+            role: MessageRole::User,
+            content: "from windows".to_string(),
+            parts_json: serde_json::json!({}),
+            created_at: Some(Utc::now()),
+            model: None,
+            tokens: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            sender: None,
+            provider: None,
+            harness: None,
+            client_id: None,
+        })
+        .await
+        .unwrap();
+        win.close().await;
+
+        let lock = dir.path().join("hub.ingest.lock");
+        ingest_into_hub(&hub, &win_path, "arknights", &lock)
+            .await
+            .unwrap();
+
+        let mac_dir = tempfile::tempdir().unwrap();
+        let mac_path = mac_dir.path().join("mac.db");
+        let mac = Database::open(&mac_path).await.unwrap();
+        let mac_source = Source {
+            id: "cursor-mac".to_string(),
+            adapter: "cursor".to_string(),
+            path: Some("/mac".to_string()),
+            last_sync_at: Some(Utc::now()),
+            config: serde_json::json!({}),
+        };
+        mac.upsert_source(&mac_source).await.unwrap();
+        let mac_conv = Conversation {
+            id: Uuid::new_v4(),
+            source_id: mac_source.id.clone(),
+            external_id: Some("mac-1".to_string()),
+            readable_id: None,
+            platform_id: None,
+            title: Some("mac".to_string()),
+            created_at: Utc::now(),
+            updated_at: Some(Utc::now()),
+            model: None,
+            provider: None,
+            workspace: None,
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            harness: None,
+            version: 0,
+            message_count: 0,
+            parent_conversation_id: None,
+            parent_message_idx: None,
+            fork_type: None,
+        };
+        mac.upsert_conversation(&mac_conv).await.unwrap();
+        mac.insert_message(&Message {
+            id: Uuid::new_v4(),
+            conversation_id: mac_conv.id,
+            idx: 0,
+            role: MessageRole::User,
+            content: "from mac".to_string(),
+            parts_json: serde_json::json!({}),
+            created_at: Some(Utc::now()),
+            model: None,
+            tokens: None,
+            cost_usd: None,
+            metadata: serde_json::json!({}),
+            sender: None,
+            provider: None,
+            harness: None,
+            client_id: None,
+        })
+        .await
+        .unwrap();
+        mac.close().await;
+
+        ingest_into_hub(&hub, &mac_path, "macbook", &lock)
+            .await
+            .unwrap();
+
+        let sources = hub.list_sources().await.unwrap();
+        let ids: Vec<_> = sources.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"arknights:cursor-win"));
+        assert!(ids.contains(&"macbook:cursor-mac"));
+        let convs = hub
+            .list_conversations(crate::db::ListConversationsOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(convs.len(), 2);
+        hub.close().await;
     }
 
     #[tokio::test]

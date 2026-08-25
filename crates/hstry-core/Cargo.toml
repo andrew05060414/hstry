@@ -27,6 +27,8 @@ prost.workspace = true
 tonic-prost.workspace = true
 tower.workspace = true
 hyper-util.workspace = true
+zstd.workspace = true
+fs4.workspace = true
 
 [build-dependencies]
 tonic-prost-build.workspace = true

@@ -68,6 +68,14 @@ mode = "standalone"  # "standalone", "hub", or "satellite"
 auto_sync = false
 auto_sync_interval_secs = 300
 
+# Hub-only rolling checkpoints (compressed .db.zst, size-capped)
+[checkpoint]
+enabled = false
+# dir = "/vol1/1000/Code/hstry backup/checkpoints"
+interval_secs = 86400
+max_total_bytes = 10737418240
+keep_weekly = 4
+
 # Web automation settings
 [web]
 enabled = false

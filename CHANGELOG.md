@@ -12,12 +12,16 @@ Upstream last consumed here is `v0.5.21` (`c8923f1`). Upstream `v0.5.22` (TUI ov
 
 ### Added
 
+- Hub-side satellite ingest: `hstry hub ingest` merges a delta sqlite into the live hub under `{device_id}:` while holding an ingest lock. `hstry remote sync --direction push` no longer SCP-overwrites the hub file.
+- Rolling hub checkpoints: `hstry checkpoint create|list|restore|prune`, daily/weekly tags, 10 GiB compressed cap. Hub service creates them when `[checkpoint] enabled`.
 - Antigravity 2.0 app, agy CLI, and IDE 1 stores (`~/.gemini/antigravity*`, SQLite + brain transcript). Legacy `~/.gemini/tmp` JSONL remains.
 - DeepSeek Harness adapter (`dsh`) for `~/.dsh/sessions` (`session.jsonl` / concatenated zstd).
 - Zcode / ZAI adapter (`zcode`) for `~/.zcode` (`cli/db/db.sqlite` session / message / part).
 - Restore runbook: [docs/restore.md](docs/restore.md) (hub snapshots to Google Drive; search-only restore on this PC).
 
 ### Changed
+
+- Satellite push exports only conversations with `updated_at` since the last successful ingest (watermark in `search_state`). `--full` keeps the legacy whole-file replace for recovery.
 
 - Satellite search defaults to the hub remote (`sync.hub_remote`) instead of local staging (trx-1xsa). Pass `--scope local` to search only this machine.
 

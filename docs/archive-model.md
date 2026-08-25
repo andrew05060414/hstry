@@ -36,7 +36,7 @@
 |------|------|------|
 | Windows satellite `arknights` | `D:/Data/hstry/staging.db` | 只收这台机刚解析到的源 |
 | Mac satellite `macbook` | `~/.local/share/hstry/staging.db` | 同上 |
-| NAS hub | `/vol1/1000/Code/hstry backup/hstry.db` | **唯一 live 合并目标** |
+| NAS hub | `/vol1/1000/Code/hstry backup/hstry-win.db` | **唯一 live 合并目标**（同目录 `hstry.db` 是旧冷档案） |
 | 云盘 | Google Drive 等 | **冷快照**，不是第二份 live hub |
 
 `remote sync push` = 把本机 staging **merge** 进 hub（源变成 `{device_id}:{source_id}`）。  

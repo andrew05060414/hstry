@@ -7,14 +7,20 @@ Generic reference for `hstry remote sync` push/pull behavior, configuration, and
 
 ## How push works
 
-`hstry remote sync --direction push` is a **merge**, not a blind upload:
+`hstry remote sync --direction push` is a **hub-side merge**, not a whole-file replace:
 
-1. SSH to the hub and resolve `database_path` (must match the hub’s `database=` in config).
-2. If the hub database exists, **fetch** it to a temporary local file.
-3. Merge the local staging database into that temp file, namespacing sources as `{device_id}:{source_id}`.
-4. Upload the merged temp file back to the hub.
+1. The satellite exports conversations/sources changed since the last successful push (`updated_at` watermark in local `search_state`).
+2. That small sqlite is SCP'd to the hub `inbox/` directory.
+3. The hub runs `hstry hub ingest --file … --namespace {device_id}` under an exclusive file lock and merges into the **live** database (WAL).
+4. The hub process keeps the live file open; satellites never SCP-overwrite it.
 
-Pull is the inverse: fetch hub → merge into local staging with the remote name as namespace.
+First push after upgrade (no watermark) still sends the whole staging DB one way. Later pushes are incremental.
+
+`--full` keeps the legacy fetch/merge/SCP-replace path for disaster recovery only. Do not use it while the hub service is running.
+
+If the hub binary is older than this change (`hstry hub` missing), the satellite logs a warning and falls back to `--full` so mixed-version rollouts do not hard-fail. Upgrade the hub first, then the satellites.
+
+Pull is unchanged: fetch hub → merge into local staging with the remote name as namespace.
 
 Conflict resolution inside a namespace uses `updated_at` (newer wins).
 
@@ -58,10 +64,17 @@ Symptom when broken: push “succeeds” but the hub only contains one machine�
 
 | Rule | Why |
 |------|-----|
-| **One push at a time** | Concurrent pushes to the same hub file cause corruption or partial SCP uploads. |
-| **Serial `auto_sync`** | Stop the service on one satellite before the other pushes, or stagger intervals. |
+| **Hub owns the live file** | Satellites ingest via `hstry hub ingest`. Do not SCP onto the live sqlite. |
+| **Ingest lock** | `hstry hub ingest` takes `{database}.ingest.lock`. Two satellites can `auto_sync` at once; the second waits. |
 | **Verify after push** | Hub `hstry stats` should list multiple `{device_id}:*` source prefixes. |
-| **Back up before first push** | `cp -a hstry.db hstry.db.bak` on the hub. |
+| **Checkpoints** | Hub `hstry checkpoint create` (and the hub service when `[checkpoint] enabled`) writes compressed rollbacks. |
+
+```bash
+hstry hub ingest --file inbox/arknights-….db --namespace arknights --delete
+hstry checkpoint create
+hstry checkpoint list
+hstry checkpoint restore hstry-20260826-040000
+```
 
 ### Push verification
 

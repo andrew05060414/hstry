@@ -32,21 +32,22 @@ Or set `database = "D:/Data/hstry/archive-restore.db"` in a throwaway config. Ke
 
 If NAS itself was lost: copy the Drive snapshot back to `/vol1/1000/Code/hstry backup/hstry.db` on the NAS first, then satellites search/push as usual.
 
-## Hub snapshots → Google Drive
+## Hub checkpoints (local rollback)
 
-hstry does not speak Drive. On the NAS, once a day:
+On the hub (NAS):
 
 ```bash
-NAS_DB="/vol1/1000/Code/hstry backup/hstry.db"
-SNAP_DIR="/vol1/1000/Code/hstry backup/snapshots"
-mkdir -p "$SNAP_DIR"
-STAMP=$(date +%Y-%m-%d)
-sqlite3 "$NAS_DB" ".backup '$SNAP_DIR/hstry-$STAMP.db'"
-# Then rclone or Feiniu Cloud Sync:
-# rclone copy "$SNAP_DIR/hstry-$STAMP.db" gdrive:hstry-archive/
+hstry checkpoint create
+hstry checkpoint list
+hstry checkpoint restore hstry-YYYYMMDD-HHMMSS
+# writes a search-only copy next to the live db (`hstry-win.restore.db` by default)
 ```
 
-Keep a small retention (for example 14 daily files). Verify a snapshot with `sqlite3 hstry-YYYY-MM-DD.db "SELECT COUNT(*) FROM conversations;"`.
+The hub service creates a daily checkpoint when `[checkpoint] enabled = true`, tags Sunday copies as weekly, and prunes compressed archives to `max_total_bytes` (default 10 GiB). Failed `integrity_check` copies are discarded.
+
+Restore never writes `staging.db`. `--live` replaces the hub file — stop `hstry service` first.
+
+Off-site Drive copies remain optional and out of band (rclone / Feiniu Cloud Sync). hstry does not speak Drive.
 
 ## Session resume (priority B)
 

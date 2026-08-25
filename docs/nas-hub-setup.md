@@ -63,22 +63,19 @@ database_path = "/vol1/1000/Code/hstry backup/hstry.db"
 与 NAS 上 `~/.config/hstry/config.toml` 里的 `database = "..."` **完全一致**（含空格，整段加引号）。  
 漏配时 push 会打到 NAS 默认路径（不存在）→ 失败或写到错误位置。
 
-### ⚠️ 禁止 Win + Mac 同时 push
+### ⚠️ 双机 `auto_sync` 可以同时开
 
-两边 `auto_sync` 同时 push 会并发覆盖同一个 `hstry.db`，导致 `database disk image is malformed` 或 SCP 中断留下半截文件。
+Push 是卫星把增量 sqlite 送到 hub `inbox/`，再由 `hstry hub ingest` 在 flock 下写入 live 库。不要再用 SCP 覆盖 `hstry-win.db`。
 
-**规则：**
+Live 库：`/vol1/1000/Code/hstry backup/hstry-win.db`。同目录 `hstry.db` 是旧 Mac 冷档案。
 
-1. 只让**一台**先 push，完成后再开另一台。
-2. push 前可临时关另一侧：`auto_sync = false`，或 `hstry service stop`。
-3. 若 Hub 损坏，在 NAS 上从备份恢复后再 push：
+若 Hub 损坏，用 checkpoint 回滚，不要从卫星 staging 整库覆盖：
 
 ```bash
-cd "/vol1/1000/Code/hstry backup"
-cp -a hstry.db hstry.db.broken-$(date +%Y%m%d-%H%M%S)
-cp -a hstry.db.pre-win-push-* hstry.db   # 或最新可用 .local-backup-* / 手动备份
-rm -f hstry.db-wal hstry.db-shm
-hstry stats   # 应能正常输出
+hstry checkpoint list
+hstry checkpoint restore <stem> --output /tmp/hstry-check.db
+# 确认能搜之后：停 service，再 --live 或手动替换 hstry-win.db
+hstry stats
 ```
 
 ### ⚠️ Push 必须真正 merge（验收清单）

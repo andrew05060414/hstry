@@ -472,6 +472,18 @@ enum Command {
         command: RemoteCommand,
     },
 
+    /// Hub-side operations (ingest a satellite delta into the live archive)
+    Hub {
+        #[command(subcommand)]
+        command: HubCommand,
+    },
+
+    /// Manage rolling hub checkpoints
+    Checkpoint {
+        #[command(subcommand)]
+        command: CheckpointCommand,
+    },
+
     /// Manage web-app automation
     Web {
         #[command(subcommand)]
@@ -640,10 +652,63 @@ enum RemoteCommand {
         /// Sync direction
         #[arg(short, long, value_enum, default_value = "pull")]
         direction: SyncDirectionArg,
+
+        /// Fetch the whole hub, merge locally, and replace the remote file.
+        /// Dangerous while the hub service is running; use only for recovery.
+        #[arg(long)]
+        full: bool,
     },
 
     /// Show remote cache status
     Status,
+}
+
+#[derive(Debug, Subcommand)]
+enum HubCommand {
+    /// Merge a satellite delta sqlite into the live hub database
+    Ingest {
+        /// Path to the delta sqlite on this machine
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Device namespace (arknights, macbook, ...)
+        #[arg(long)]
+        namespace: String,
+
+        /// Delete the delta file after a successful ingest
+        #[arg(long)]
+        delete: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CheckpointCommand {
+    /// Create a compressed checkpoint of the live database
+    Create {
+        /// Tag this checkpoint as weekly (otherwise Sunday creates are tagged)
+        #[arg(long)]
+        weekly: bool,
+    },
+
+    /// List checkpoints
+    List,
+
+    /// Restore a checkpoint to a search-only path (never staging.db)
+    Restore {
+        /// Checkpoint stem (from `hstry checkpoint list`)
+        stem: String,
+
+        /// Destination sqlite path
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Replace the live hub database (stop the service first)
+        #[arg(long)]
+        live: bool,
+    },
+
+    /// Delete old checkpoints to stay under the size cap
+    Prune,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -1244,6 +1309,12 @@ async fn main() -> Result<()> {
             let db = Database::open(&config.database).await?;
             apply_storage_config(&db, &config);
             cmd_remote(&db, &config, &config_path, command, cli.json).await
+        }
+        Command::Hub { command } => cmd_hub(&config, command, cli.json).await,
+        Command::Checkpoint { command } => {
+            let db = Database::open(&config.database).await?;
+            apply_storage_config(&db, &config);
+            cmd_checkpoint(&db, &config, command, cli.json).await
         }
         Command::Web { command } => {
             let db = Database::open(&config.database).await?;
@@ -2465,6 +2536,7 @@ async fn cmd_list(
         workspace,
         after,
         before,
+        updated_after: None,
         limit: Some(if dedup_across_sources {
             expanded_list_limit(limit)
         } else {
@@ -2534,6 +2606,7 @@ async fn cmd_list_peek(
         workspace: workspace_filter,
         after,
         before,
+        updated_after: None,
         limit: Some(if dedup_across_sources {
             expanded_list_limit(limit)
         } else {
@@ -4589,6 +4662,7 @@ async fn cmd_export(
             workspace: workspace_filter.clone(),
             after: None,
             before: None,
+            updated_after: None,
             limit: None,
         })
         .await?
@@ -4900,6 +4974,7 @@ async fn run_fzf_picker(
             workspace: workspace_filter_like,
             after,
             before,
+            updated_after: None,
             limit: Some(limit),
         })
         .await?;
@@ -5072,6 +5147,7 @@ async fn cmd_resume(
                 workspace: workspace_filter_like.clone(),
                 after,
                 before,
+                updated_after: None,
                 limit: Some(limit),
             })
             .await?;
@@ -5195,6 +5271,7 @@ async fn cmd_resume(
                 workspace: workspace_filter_like,
                 after,
                 before,
+                updated_after: None,
                 limit: Some(limit),
             })
             .await?;
@@ -5808,6 +5885,7 @@ async fn cmd_dedup(
         workspace: None,
         after: None,
         before: None,
+        updated_after: None,
         limit: None,
     };
 
@@ -6395,6 +6473,167 @@ struct RemoteSyncSummary {
     total_messages_added: usize,
 }
 
+async fn cmd_hub(config: &Config, command: HubCommand, json: bool) -> Result<()> {
+    match command {
+        HubCommand::Ingest {
+            file,
+            namespace,
+            delete,
+        } => {
+            if !file.exists() {
+                anyhow::bail!("delta file not found: {}", file.display());
+            }
+            let db = Database::open(&config.database).await?;
+            apply_storage_config(&db, config);
+            let lock_path = hstry_core::checkpoint::ingest_lock_path(&config.database);
+            let namespace = hstry_core::config::sanitize_device_namespace(&namespace);
+            let result = hstry_core::remote::ingest_into_hub(&db, &file, &namespace, &lock_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            db.close().await;
+            if delete {
+                std::fs::remove_file(&file)?;
+            }
+            if json {
+                return emit_json(JsonResponse {
+                    ok: true,
+                    result: Some(result),
+                    error: None,
+                });
+            }
+            println!(
+                "Ingested {ns}: added {added} conversations, updated {updated}, {messages} messages",
+                ns = namespace,
+                added = result.conversations_added,
+                updated = result.conversations_updated,
+                messages = result.messages_added
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_checkpoint(
+    db: &Database,
+    config: &Config,
+    command: CheckpointCommand,
+    json: bool,
+) -> Result<()> {
+    use hstry_core::checkpoint::{
+        create_checkpoint, default_restore_path, list_checkpoints, prune_checkpoints,
+        restore_checkpoint,
+    };
+
+    let dir = config.checkpoint.resolve_dir(&config.database);
+    match command {
+        CheckpointCommand::Create { weekly } => {
+            let weekly = if weekly { Some(true) } else { None };
+            let created = create_checkpoint(db, &config.database, &config.checkpoint, weekly)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            prune_checkpoints(&dir, &config.checkpoint).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if json {
+                return emit_json(JsonResponse {
+                    ok: true,
+                    result: Some(created.manifest),
+                    error: None,
+                });
+            }
+            println!(
+                "Checkpoint {} ({})",
+                created.manifest.stem,
+                format_bytes(created.manifest.compressed_bytes)
+            );
+        }
+        CheckpointCommand::List => {
+            let listed = list_checkpoints(&dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if json {
+                let manifests: Vec<_> = listed.iter().map(|c| &c.manifest).collect();
+                return emit_json(JsonResponse {
+                    ok: true,
+                    result: Some(manifests),
+                    error: None,
+                });
+            }
+            if listed.is_empty() {
+                println!("No checkpoints in {}", dir.display());
+                return Ok(());
+            }
+            println!(
+                "{:<22} {:>8} {:>8} {:>8} {:>10} {}",
+                "STEM", "CONVS", "MSGS", "SRCS", "SIZE", "TAGS"
+            );
+            for item in listed {
+                let tag = if item.manifest.weekly {
+                    "weekly"
+                } else {
+                    "daily"
+                };
+                println!(
+                    "{:<22} {:>8} {:>8} {:>8} {:>10} {tag}",
+                    item.manifest.stem,
+                    item.manifest.conversations,
+                    item.manifest.messages,
+                    item.manifest.sources,
+                    format_bytes(item.manifest.compressed_bytes)
+                );
+            }
+        }
+        CheckpointCommand::Restore { stem, output, live } => {
+            let dest = if live {
+                config.database.clone()
+            } else {
+                output.unwrap_or_else(|| default_restore_path(&config.database))
+            };
+            if dest
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("staging.db"))
+            {
+                anyhow::bail!("refusing to restore a checkpoint onto staging.db");
+            }
+            if live {
+                let _ =
+                    create_checkpoint(db, &config.database, &config.checkpoint, Some(false)).await;
+            }
+            let restored =
+                restore_checkpoint(&dir, &stem, &dest).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if json {
+                return emit_json(JsonResponse {
+                    ok: true,
+                    result: Some(serde_json::json!({
+                        "stem": stem,
+                        "path": restored,
+                        "live": live
+                    })),
+                    error: None,
+                });
+            }
+            println!("Restored {stem} -> {}", restored.display());
+            if live {
+                println!("Live hub replaced. Restart `hstry service` if it was running.");
+            }
+        }
+        CheckpointCommand::Prune => {
+            let deleted =
+                prune_checkpoints(&dir, &config.checkpoint).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if json {
+                return emit_json(JsonResponse {
+                    ok: true,
+                    result: Some(deleted),
+                    error: None,
+                });
+            }
+            if deleted.is_empty() {
+                println!("Nothing to prune.");
+            } else {
+                println!("Pruned {} checkpoint(s).", deleted.len());
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn cmd_remote(
     db: &Database,
     config: &Config,
@@ -6649,6 +6888,7 @@ async fn cmd_remote(
         RemoteCommand::Sync {
             remote: remote_name,
             direction,
+            full,
         } => {
             let remotes_to_sync: Vec<_> = if let Some(ref name) = remote_name {
                 config.remotes.iter().filter(|r| &r.name == name).collect()
@@ -6688,9 +6928,11 @@ async fn cmd_remote(
                     }
                     hstry_core::remote::SyncDirection::Push => {
                         remote::sync_to_remote(
+                            db,
                             &config.database,
                             remote_config,
                             &config.sync.device_namespace(),
+                            full,
                         )
                         .await
                     }
@@ -6700,9 +6942,11 @@ async fn cmd_remote(
                         match pull_result {
                             Ok((_, mut sync)) => {
                                 if let Ok(push_sync) = remote::sync_to_remote(
+                                    db,
                                     &config.database,
                                     remote_config,
                                     &config.sync.device_namespace(),
+                                    full,
                                 )
                                 .await
                                 {
@@ -6954,6 +7198,7 @@ async fn cmd_mmry_extract(
             workspace: workspace.clone(),
             after,
             before: None,
+            updated_after: None,
             limit,
         })
         .await?;
