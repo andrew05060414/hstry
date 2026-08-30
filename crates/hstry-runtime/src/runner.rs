@@ -443,17 +443,12 @@ impl AdapterRunner {
     }
 }
 
-/// Normalize adapter script paths before passing them to JS runtimes.
-///
-/// Windows canonical paths may use the `\\?\` extended-length prefix, which
-/// Node.js fails to execute (`EISDIR: lstat 'D:'`).
 fn normalize_adapter_script_path(path: &Path) -> String {
-    let path_str = path.display().to_string();
-    #[cfg(windows)]
-    if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
-        return stripped.to_string();
-    }
-    path_str
+    let displayed = path.display().to_string();
+    displayed
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&displayed)
+        .to_string()
 }
 
 #[cfg(test)]
