@@ -1,0 +1,2 @@
+{"type":"system","content":"You are Grok 4.6 released by xAI."}
+{"type":"user","content":[{"type":"text","text":"<system-reminder>\nskills list\n</system-reminder>"}],"synthetic_reason":"system_reminder"}

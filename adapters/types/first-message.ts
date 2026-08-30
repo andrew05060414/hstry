@@ -19,6 +19,8 @@ const SYSTEM_CONTEXT_MARKERS = [
   '<SYSTEM_PROMPT>',
   '</SYSTEM_PROMPT>',
   'The conversation history before this point was compacted',
+  '<system-reminder>',
+  '<user_info>',
 ];
 
 /** Returns true if `content` looks like a system bootstrap, not a real user request. */

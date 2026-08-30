@@ -2086,6 +2086,7 @@ fn is_candidate_dir(path: &Path) -> bool {
         || name.contains("cursor")
         || name.contains("chatgpt")
         || name.contains("assistant")
+        || name.contains("grok")
 }
 
 fn is_candidate_file(path: &Path) -> bool {

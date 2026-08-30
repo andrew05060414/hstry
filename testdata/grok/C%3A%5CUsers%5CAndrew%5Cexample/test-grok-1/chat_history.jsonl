@@ -1,0 +1,8 @@
+{"type":"system","content":"You are Grok 4.6 released by xAI. You are an interactive CLI tool that helps users with software engineering tasks."}
+{"type":"user","content":[{"type":"text","text":"<user_info>\nOS Version: windows\nWorkspace Path: C:\\Users\\Andrew\\example\n</user_info>"}]}
+{"type":"user","content":[{"type":"text","text":"<system-reminder>\nThe following skills are available for use.\n</system-reminder>"}],"synthetic_reason":"system_reminder"}
+{"type":"user","content":[{"type":"text","text":"<user_query>\nHello Grok fixture — please read README.md\n</user_query>"}],"prompt_index":0}
+{"type":"reasoning","id":"rs_test","summary":[{"type":"summary_text","text":"User wants README.md. I should call read_file."}],"status":"completed"}
+{"type":"assistant","content":"I'll read README.md first.","tool_calls":[{"id":"call-test-1","name":"read_file","arguments":"{\"target_file\":\"README.md\"}"}],"model_id":"grok-4.6-build"}
+{"type":"tool_result","tool_call_id":"call-test-1","content":"# Example\nHello from README."}
+{"type":"assistant","content":"README.md is a short example file.","model_id":"grok-4.6-build"}

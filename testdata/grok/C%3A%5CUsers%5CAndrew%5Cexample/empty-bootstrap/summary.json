@@ -1,0 +1,12 @@
+{
+  "info": {
+    "id": "empty-bootstrap",
+    "cwd": "C:\\Users\\Andrew\\example"
+  },
+  "session_summary": "",
+  "created_at": "2026-08-22T17:57:32.114Z",
+  "updated_at": "2026-08-22T17:57:33.189Z",
+  "num_chat_messages": 2,
+  "current_model_id": "grok-4.6",
+  "agent_name": "grok-build-plan"
+}
