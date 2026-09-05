@@ -32,12 +32,35 @@ import type {
 } from '../types/index.ts';
 import { runAdapter, textOnlyParts } from '../types/index.ts';
 
-let Database: typeof import('better-sqlite3') | null = null;
+interface SqliteDb {
+  prepare(sql: string): SqliteStatement;
+  exec?(sql: string): void;
+  run?(sql: string): void;
+  close(): void;
+}
+
+interface SqliteStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
+}
+
+let openDb: ((path: string, options?: { readonly?: boolean }) => SqliteDb) | null = null;
+
 try {
-  Database = (await import('better-sqlite3')).default;
+  if (typeof Bun !== 'undefined') {
+    // @ts-ignore - bun:sqlite is Bun-only
+    const { Database: BunDb } = await import('bun:sqlite');
+    openDb = (path: string, opts?: { readonly?: boolean }) => new BunDb(path, opts) as unknown as SqliteDb;
+  } else {
+    const mod = await import('better-sqlite3');
+    const BetterSqlite = mod.default;
+    openDb = (path: string, opts?: { readonly?: boolean }) => BetterSqlite(path, opts) as unknown as SqliteDb;
+  }
 } catch {
   // SQLite not available
 }
+
+declare const Bun: unknown;
 
 const MAX_TEXT = 20_000;
 const BUBBLE_USER = 1;
@@ -52,26 +75,17 @@ function cursorRoots(): string[] {
   const home = homedir();
   const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
   const localAppData = process.env.LOCALAPPDATA || join(home, 'AppData', 'Local');
-  const roots = [
-    join(home, '.cursaves', 'snapshots'),
-    join(appData, 'Cursor', 'User', 'globalStorage'),
-    join(appData, 'Cursor', 'User', 'workspaceStorage'),
-  ];
+  const roots: string[] = [];
+
   if (process.platform === 'win32') {
     roots.push(
+      join(appData, 'Cursor', 'User', 'globalStorage'),
       join(localAppData, 'Cursor', 'User', 'globalStorage'),
-      join(localAppData, 'Cursor', 'User', 'workspaceStorage'),
     );
   } else if (process.platform === 'darwin') {
-    roots.push(
-      join(home, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage'),
-      join(home, 'Library', 'Application Support', 'Cursor', 'User', 'workspaceStorage'),
-    );
+    roots.push(join(home, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage'));
   } else {
-    roots.push(
-      join(home, '.config', 'Cursor', 'User', 'globalStorage'),
-      join(home, '.config', 'Cursor', 'User', 'workspaceStorage'),
-    );
+    roots.push(join(home, '.config', 'Cursor', 'User', 'globalStorage'));
   }
   return [...new Set(roots)];
 }
@@ -136,13 +150,13 @@ interface CursorPromptModern {
 type CursorPromptEntry = CursorPromptLegacy & CursorPromptModern;
 
 class SqliteKv {
-  private db: InstanceType<NonNullable<typeof Database>>;
+  private db: SqliteDb;
   private tmpDir: string | null = null;
 
   constructor(dbPath: string) {
-    if (!Database) throw new Error('better-sqlite3 not available');
+    if (!openDb) throw new Error('SQLite not available');
     try {
-      this.db = new Database(dbPath, { readonly: true });
+      this.db = openDb(dbPath, { readonly: true });
       this.db.prepare('SELECT 1').get();
     } catch {
       const dir = join(tmpdir(), `hstry-cursor-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -154,9 +168,13 @@ class SqliteKv {
         const side = dbPath + suffix;
         if (existsSync(side)) copyFileSync(side, tmpDb + suffix);
       }
-      this.db = new Database(tmpDb);
+      this.db = openDb(tmpDb, { readonly: false });
       try {
-        this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        if (typeof this.db.exec === 'function') {
+          this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        } else if (typeof this.db.run === 'function') {
+          this.db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+        }
       } catch {
         /* ignore */
       }
@@ -215,7 +233,11 @@ class SqliteKv {
       /* ignore */
     }
     if (this.tmpDir) {
-      rmSync(this.tmpDir, { recursive: true, force: true });
+      try {
+        rmSync(this.tmpDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
@@ -226,15 +248,15 @@ function truncate(s: string, n: number): string {
 
 function toMs(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    return value < 1e12 ? value * 1000 : value;
+    return Math.floor(value < 1e12 ? value * 1000 : value);
   }
   if (typeof value === 'string') {
     if (value.includes('T')) {
       const parsed = Date.parse(value);
-      if (Number.isFinite(parsed)) return parsed;
+      if (Number.isFinite(parsed)) return Math.floor(parsed);
     }
     const n = Number(value);
-    if (Number.isFinite(n) && n > 0) return n < 1e12 ? n * 1000 : n;
+    if (Number.isFinite(n) && n > 0) return Math.floor(n < 1e12 ? n * 1000 : n);
   }
   return undefined;
 }
@@ -309,15 +331,6 @@ function sessionFromComposer(opts: {
         createdAt,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       });
-      for (const tc of toolCalls) {
-        messages.push({
-          role: 'tool',
-          content: tc.output || '',
-          parts: textOnlyParts(tc.output || ''),
-          createdAt,
-          metadata: { toolName: tc.toolName },
-        });
-      }
     }
   };
 
@@ -474,143 +487,95 @@ function walkFiles(
   return out;
 }
 
-function findGlobalDb(roots: string[]): string | null {
-  for (const root of roots) {
-    if (root.endsWith('state.vscdb') && existsSync(root)) return root;
-    const candidate = join(root, 'state.vscdb');
-    if (existsSync(candidate)) return candidate;
-    if (basename(root) === 'globalStorage') {
-      const p = join(root, 'state.vscdb');
-      if (existsSync(p)) return p;
-    }
-  }
-  return null;
+interface ChatTabBubble {
+  type?: string | number;
+  text?: string;
+  rawText?: string;
+  modelType?: string;
+  createdAt?: number | string;
 }
 
-function expandScanRoots(inputPath: string): string[] {
-  return [...new Set([inputPath, ...DEFAULT_PATHS])];
+interface ChatTabData {
+  tabs?: Array<{
+    id?: string;
+    tabId?: string;
+    title?: string;
+    createdAt?: number | string;
+    lastUpdatedAt?: number | string;
+    bubbles?: ChatTabBubble[];
+  }>;
 }
 
-function loadAllCursorSessions(inputPath: string, opts?: ParseOptions): Conversation[] {
-  const conversations: Conversation[] = [];
-  const seen = new Set<string>();
-  const limit = opts?.limit && opts.limit > 0 ? opts.limit : 0;
-
-  const add = (conv: Conversation | null): boolean => {
-    if (!conv) return false;
-    const id = conv.externalId ?? `${conv.createdAt}-${conv.title}`;
-    if (seen.has(id)) return false;
-    seen.add(id);
-    conversations.push(conv);
-    return true;
-  };
-
-  const full = (): boolean => limit > 0 && conversations.length >= limit;
-  const roots = expandScanRoots(inputPath);
-
-  for (const root of roots) {
-    if (!existsSync(root) || full()) continue;
-
-    const snapshots = walkFiles(
-      root,
-      (name) => name.endsWith('.json.gz') || (name.endsWith('.json') && !name.endsWith('.meta.json')),
-    )
-      .filter((p) => !p.endsWith('.meta.json'))
-      .sort((a, b) => {
-        try {
-          return statSync(b).mtimeMs - statSync(a).mtimeMs;
-        } catch {
-          return 0;
-        }
-      });
-
-    for (const snap of snapshots) {
-      if (full()) break;
-      try {
-        add(parseSnapshotFile(snap, opts));
-      } catch {
-        /* skip */
-      }
-    }
-
-    if (full()) continue;
-
-    if (root.endsWith('state.vscdb') || basename(root) === 'state.vscdb') {
-      for (const conv of loadFromGlobalDb(root, opts)) {
-        add(conv);
-        if (full()) break;
-      }
-    } else {
-      const globalDb = findGlobalDb([root]);
-      if (globalDb) {
-        for (const conv of loadFromGlobalDb(globalDb, opts)) {
-          add(conv);
-          if (full()) break;
-        }
-      }
-      if (full()) continue;
-
-      const wsDbs = walkFiles(
-        root,
-        (name, fullPath) => name === 'state.vscdb' && fullPath.includes('workspaceStorage'),
-      );
-      for (const wsDb of wsDbs) {
-        if (full()) break;
-        try {
-          for (const conv of loadFromGlobalDb(wsDb, opts)) {
-            add(conv);
-            if (full()) break;
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }
-
-  // Fallback: workspace prompt logs when no composer sessions found
-  if (conversations.length === 0) {
-    for (const root of roots) {
-      if (full()) break;
-      const wsDbs = walkFiles(
-        root,
-        (name, fullPath) => name === 'state.vscdb' && fullPath.includes('workspaceStorage'),
-      );
-      for (const wsDb of wsDbs) {
-        for (const conv of parseWorkspacePromptsFallback(wsDb, opts)) {
-          add(conv);
-          if (full()) break;
-        }
-      }
-    }
-  }
-
-  conversations.sort((a, b) => b.createdAt - a.createdAt);
-  return limit > 0 ? conversations.slice(0, limit) : conversations;
-}
-
-function parseWorkspacePromptsFallback(dbPath: string, opts?: ParseOptions): Conversation[] {
-  if (!Database) return [];
-  const workspaceId = basename(dirname(dbPath));
+function parseWorkbenchChatData(
+  rawJson: string,
+  workspaceId: string,
+  sourcePath: string,
+  opts?: ParseOptions,
+): Conversation[] {
   try {
-    const db = new Database(dbPath, { readonly: true });
-    const promptsRow = db.prepare('SELECT value FROM ItemTable WHERE key = ?').get(PROMPTS_KEY) as
-      | { value: string }
-      | undefined;
-    const generationsRow = db
-      .prepare('SELECT value FROM ItemTable WHERE key = ?')
-      .get(GENERATIONS_KEY) as { value: string } | undefined;
-    db.close();
-    if (!promptsRow?.value) return [];
-    let generations: Array<{ unixMs?: number; textDescription?: string; type?: string }> | undefined;
-    if (generationsRow?.value) {
-      try {
-        generations = JSON.parse(generationsRow.value);
-      } catch {
-        /* ignore */
+    const data = JSON.parse(rawJson) as ChatTabData;
+    if (!data?.tabs || !Array.isArray(data.tabs)) return [];
+
+    const conversations: Conversation[] = [];
+    for (const tab of data.tabs) {
+      const tabId = tab.id || tab.tabId;
+      if (!tabId || !tab.bubbles || !Array.isArray(tab.bubbles)) continue;
+
+      const messages: Message[] = [];
+      let firstTime: number | undefined;
+      let lastTime: number | undefined;
+
+      for (const b of tab.bubbles) {
+        const text = truncate(b.text || b.rawText || '', MAX_TEXT);
+        if (!text) continue;
+
+        const createdAt = toMs(b.createdAt) ?? toMs(tab.createdAt);
+        if (createdAt) {
+          if (!firstTime || createdAt < firstTime) firstTime = createdAt;
+          if (!lastTime || createdAt > lastTime) lastTime = createdAt;
+        }
+
+        const isUser = b.type === 'user' || b.type === 1 || b.type === 'human';
+        if (isUser) {
+          messages.push({
+            role: 'user',
+            content: text,
+            parts: textOnlyParts(text),
+            createdAt,
+          });
+        } else {
+          messages.push({
+            role: 'assistant',
+            content: text,
+            parts: textOnlyParts(text),
+            createdAt,
+            model: b.modelType,
+          });
+        }
       }
+
+      if (messages.length === 0) continue;
+      const createdAt = firstTime ?? toMs(tab.createdAt) ?? Date.now();
+      const updatedAt = lastTime ?? toMs(tab.lastUpdatedAt) ?? createdAt;
+
+      if (opts?.since && createdAt < opts.since && updatedAt < opts.since) continue;
+
+      conversations.push({
+        externalId: tabId,
+        title: tab.title || messages[0]?.content?.slice(0, 80) || 'Cursor Chat',
+        createdAt,
+        updatedAt,
+        workspace: workspaceId,
+        provider: 'cursor',
+        messages,
+        metadata: {
+          source: 'cursor-chat-tabs',
+          tabId,
+          sourcePath,
+        },
+      });
     }
-    return parseModernPromptsOnly(promptsRow.value, generations, workspaceId, opts);
+    return conversations;
   } catch {
     return [];
   }
@@ -634,7 +599,7 @@ function parseModernPromptsOnly(
       const text = prompts[i].text?.trim() || prompts[i].prompt?.trim();
       if (!text) continue;
       const gen = generations?.[i];
-      const createdAt = gen?.unixMs ?? prompts[i].createdAt;
+      const createdAt = toMs(gen?.unixMs) ?? toMs(prompts[i].createdAt);
       messages.push({ role: 'user', content: text, parts: textOnlyParts(text), createdAt });
       if (prompts[i].response) {
         messages.push({
@@ -673,29 +638,142 @@ function parseModernPromptsOnly(
   }
 }
 
-async function findStateFiles(path: string): Promise<string[]> {
-  const files: string[] = [];
-  const stats = await stat(path).catch(() => null);
-  if (!stats) return files;
-  if (stats.isFile() && path.endsWith('.vscdb')) {
-    files.push(path);
-    return files;
-  }
-  if (!stats.isDirectory()) return files;
+function loadFromDb(dbPath: string, opts?: ParseOptions): Conversation[] {
+  const conversations: Conversation[] = [];
+  const workspaceId = basename(dirname(dbPath));
 
-  const directDb = join(path, 'state.vscdb');
-  if ((await stat(directDb).catch(() => null))?.isFile()) {
-    files.push(directDb);
-    return files;
+  // 1. Try loading Composer sessions
+  const composerConvs = loadFromGlobalDb(dbPath, opts);
+  if (composerConvs.length > 0) {
+    conversations.push(...composerConvs);
   }
 
-  const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const dbPath = join(path, entry.name, 'state.vscdb');
-    if ((await stat(dbPath).catch(() => null))?.isFile()) files.push(dbPath);
+  // 2. Try loading workbench chat tabs and prompts via SqliteKv
+  let kv: SqliteKv | null = null;
+  try {
+    kv = new SqliteKv(dbPath);
+    const chatDataRaw = kv.getItem(CHAT_DATA_KEY);
+    if (chatDataRaw) {
+      const chatConvs = parseWorkbenchChatData(chatDataRaw, workspaceId, dbPath, opts);
+      conversations.push(...chatConvs);
+    }
+
+    // 3. If still nothing found, try legacy prompts
+    if (conversations.length === 0) {
+      const promptsRaw = kv.getItem(PROMPTS_KEY);
+      if (promptsRaw) {
+        const genRaw = kv.getItem(GENERATIONS_KEY);
+        let generations: Array<{ unixMs?: number; textDescription?: string; type?: string }> | undefined;
+        if (genRaw) {
+          try {
+            generations = JSON.parse(genRaw);
+          } catch {
+            /* ignore */
+          }
+        }
+        const promptConvs = parseModernPromptsOnly(promptsRaw, generations, workspaceId, opts);
+        conversations.push(...promptConvs);
+      }
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    kv?.close();
   }
-  return files;
+
+  return conversations;
+}
+
+function expandScanRoots(inputPath?: string): string[] {
+  if (!inputPath || inputPath === '.' || inputPath === '') {
+    return DEFAULT_PATHS;
+  }
+  const expanded = inputPath.replace(/^~(?=$|\/|\\)/, homedir());
+  return [expanded];
+}
+
+function isSnapshotFile(name: string, fullPath: string): boolean {
+  if (name.endsWith('.meta.json')) return false;
+  if (name.endsWith('.json.gz')) return true;
+  if (name.endsWith('.json')) {
+    const p = fullPath.toLowerCase();
+    if (p.includes('snapshots') || p.includes('cursaves') || p.includes('snapshot')) return true;
+    try {
+      const head = readFileSync(fullPath, { encoding: 'utf8', flag: 'r' }).slice(0, 500);
+      return head.includes('composerId') || head.includes('bubbleEntries') || head.includes('composerData');
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function loadAllCursorSessions(inputPath: string, opts?: ParseOptions): Conversation[] {
+  const conversations: Conversation[] = [];
+  const seen = new Set<string>();
+  const limit = opts?.limit && opts.limit > 0 ? opts.limit : 0;
+
+  const add = (conv: Conversation | null): boolean => {
+    if (!conv) return false;
+    const id = conv.externalId ?? `${conv.createdAt}-${conv.title}`;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    conversations.push(conv);
+    return true;
+  };
+
+  const full = (): boolean => limit > 0 && conversations.length >= limit;
+  const roots = expandScanRoots(inputPath);
+
+  for (const root of roots) {
+    if (!existsSync(root) || full()) continue;
+
+    // 1. Primary: load live sessions from SQLite state.vscdb
+    if (root.endsWith('state.vscdb') || basename(root) === 'state.vscdb') {
+      for (const conv of loadFromDb(root, opts)) {
+        add(conv);
+        if (full()) break;
+      }
+    } else {
+      const dbFiles = walkFiles(root, (name) => name === 'state.vscdb');
+      dbFiles.sort((a, b) => {
+        const aGlobal = a.includes('globalStorage') ? 0 : 1;
+        const bGlobal = b.includes('globalStorage') ? 0 : 1;
+        return aGlobal - bGlobal;
+      });
+
+      for (const dbPath of dbFiles) {
+        if (full()) break;
+        for (const conv of loadFromDb(dbPath, opts)) {
+          add(conv);
+          if (full()) break;
+        }
+      }
+    }
+
+    if (full()) continue;
+
+    // 2. Secondary: fill in any historical sessions only present in offline snapshots (.json / .json.gz)
+    const snapshots = walkFiles(root, isSnapshotFile).sort((a, b) => {
+      try {
+        return statSync(b).mtimeMs - statSync(a).mtimeMs;
+      } catch {
+        return 0;
+      }
+    });
+
+    for (const snap of snapshots) {
+      if (full()) break;
+      try {
+        add(parseSnapshotFile(snap, opts));
+      } catch {
+        /* skip */
+      }
+    }
+  }
+
+  conversations.sort((a, b) => b.createdAt - a.createdAt);
+  return limit > 0 ? conversations.slice(0, limit) : conversations;
 }
 
 function conversationsToMarkdown(conversations: Conversation[]): string {
@@ -724,42 +802,41 @@ const adapter: Adapter = {
   },
 
   async detect(path: string): Promise<number | null> {
-    if (!Database) return null;
+    if (!openDb) return null;
 
     const roots = expandScanRoots(path);
     for (const root of roots) {
       if (!existsSync(root)) continue;
 
-      const snapshots = walkFiles(root, (name) => name.endsWith('.json.gz') || name.endsWith('.json'));
+      const snapshots = walkFiles(root, isSnapshotFile);
       if (snapshots.length > 0) return 0.95;
 
       const dbs: string[] = [];
-      if (root.endsWith('state.vscdb')) dbs.push(root);
-      const globalDb = findGlobalDb([root]);
-      if (globalDb) dbs.push(globalDb);
-      dbs.push(
-        ...walkFiles(root, (name, fullPath) => name === 'state.vscdb' && fullPath.includes('workspaceStorage')),
-      );
+      if (root.endsWith('state.vscdb') || basename(root) === 'state.vscdb') {
+        dbs.push(root);
+      } else {
+        dbs.push(...walkFiles(root, (name) => name === 'state.vscdb'));
+      }
 
       for (const dbPath of dbs.slice(0, 5)) {
+        let db: SqliteKv | null = null;
         try {
-          const db = new SqliteKv(dbPath);
-          const ok = db.hasComposerData() || db.getJson(CHAT_DATA_KEY) || db.getJson(PROMPTS_KEY);
-          db.close();
+          db = new SqliteKv(dbPath);
+          const ok = db.hasComposerData() || db.getItem(CHAT_DATA_KEY) || db.getItem(PROMPTS_KEY);
           if (ok) return 0.95;
         } catch {
           /* continue */
+        } finally {
+          db?.close();
         }
       }
     }
 
-    const files = await findStateFiles(path);
-    if (files.length > 0) return 0.7;
     return null;
   },
 
   async parse(path: string, opts?: ParseOptions): Promise<Conversation[]> {
-    if (!Database) return [];
+    if (!openDb) return [];
     return loadAllCursorSessions(path, opts);
   },
 
