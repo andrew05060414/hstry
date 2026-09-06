@@ -6,6 +6,14 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "hstry-tui"
+path = "src/main.rs"
+
+[[bin]]
+name = "chronicle-tui"
+path = "src/main.rs"
+
 
 [dependencies]
 hstry-core.workspace = true

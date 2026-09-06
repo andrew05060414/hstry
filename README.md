@@ -1,6 +1,8 @@
 # hstry
 
-Personal fork of [byteowlz/hstry](https://github.com/byteowlz/hstry). Canonical repo: [andrew05060414/hstry](https://github.com/andrew05060414/hstry). The name stays `hstry` for now.
+Personal fork of [byteowlz/hstry](https://github.com/byteowlz/hstry). Canonical repo: [andrew05060414/hstry](https://github.com/andrew05060414/hstry).
+
+**Spoken / connecting-layer name: Chronicle.** Product home: [andrew05060414/chronicle](https://github.com/andrew05060414/chronicle). Commands: `chronicle` and `hstry` are the same binary. Crate names, `%APPDATA%\hstry\`, and the database path stay `hstry` so upstream merges do not explode. Upstream remains `byteowlz/hstry`.
 
 Universal AI chat history database. Aggregates conversations from local coding agents (Cursor, Codex, Claude Code, Pi, OpenCode, QClaw, WorkBuddy, Antigravity CLI, and others) into a single searchable SQLite database. Optional NAS hub/satellite sync keeps Windows and Mac histories namespaced.
 
@@ -33,6 +35,8 @@ cd hstry
 cargo install --path crates/hstry-cli
 ```
 
+This installs both `hstry` and `chronicle`. They share `src/main.rs`.
+
 To install all binaries (CLI, TUI, MCP):
 
 ```bash
@@ -40,6 +44,8 @@ cargo install --path crates/hstry-cli
 cargo install --path crates/hstry-tui
 cargo install --path crates/hstry-mcp
 ```
+
+`hstry-tui` also installs `chronicle-tui`. `chronicle tui` launches whichever TUI binary is on `PATH`.
 
 ### Build from Source
 
@@ -178,6 +184,10 @@ hstry resume --limit 10
 | `adapters list/add/enable/disable` | Manage adapters |
 | `adapters repo ...` | Manage adapter repositories (git/archive/local) |
 | `remote add/list/remove/test/fetch/sync/status` | Manage remote hosts and sync |
+| `checkpoint create/list/restore/prune` | Rolling compressed snapshots of the live database |
+| `backup` | 3-2-1 backup: integrity check, NAS remote push, Oracle `scp`, Google Drive `rclone` |
+| `skills audit/list/sync/bootstrap` | Proxy to Andrew-Skill / ASM (not a memory store) |
+| `tui` | Launch `chronicle-tui` / `hstry-tui` |
 
 Adapter installs are version-pinned to the hstry binary. Run `hstry adapters update`
 whenever you upgrade, and the CLI will refuse to sync if adapter manifests do not
@@ -425,6 +435,23 @@ just clippy          # Lint only
 just update-adapters # Copy latest adapters to ~/.config/hstry/adapters
 just update-adapters-windows # Windows: copy to %APPDATA%\hstry\adapters
 ```
+## Chronicle connecting layer
+
+`chronicle` is the speakable name for this fork's CLI. It owns the conversation archive (`search` / `peek` / `show` / `sync` / `remote` / `checkpoint` / `backup`) and proxies skill install/audit to Andrew-Skill.
+
+```bash
+chronicle search "query" --scope local
+chronicle backup --dry-run
+chronicle skills audit
+chronicle tui
+```
+
+3-2-1 backup uses the **configured live database** only (typically `D:/Data/hstry/staging.db` on this machine). `--encrypt` requires `CHRONICLE_BACKUP_KEY`; there is no default passphrase. If `rclone` is missing, the Google Drive step is `skipped` (not `ok`).
+
+Not on this bus: CTX, AMS, Mem0, the jobs tracker, knowledge-hub.
+
+Daily NAS sync can optionally chain offsite copies via `hstry-daily-sync.ps1 -Offsite`.
+
 ## Contributing
 
 This is a personal fork. Issues live in `.trx/`. See [CHANGELOG.md](CHANGELOG.md) for 1.0 notes.

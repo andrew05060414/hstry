@@ -25,8 +25,10 @@ fn apply_storage_config(db: &Database, config: &Config) {
 mod adapter_manifest;
 use serde::{Serialize, de::DeserializeOwned};
 
+mod backup;
 mod pretty;
 mod service;
+mod skills;
 mod sync;
 
 #[derive(Debug, serde::Deserialize)]
@@ -121,10 +123,10 @@ struct AdapterStatus {
 }
 #[derive(Debug, Parser)]
 #[command(
-    name = "hstry",
+    name = env!("CARGO_BIN_NAME"),
     author,
     version,
-    about = "Universal AI chat history database",
+    about = "Chronicle connecting layer for hstry — universal AI chat history",
     propagate_version = true
 )]
 struct Cli {
@@ -542,6 +544,34 @@ enum Command {
         #[arg(long)]
         repair: bool,
     },
+
+    /// 3-2-1 backup of the live archive (NAS + Oracle + Google Drive)
+    Backup {
+        /// Print planned paths without writing or transferring
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Destinations (repeatable). `all` = nas + oracle + gdrive
+        #[arg(long, value_enum, default_value = "all")]
+        target: Vec<backup::BackupTarget>,
+
+        /// Encrypt the offsite snapshot. Requires CHRONICLE_BACKUP_KEY; no default passphrase.
+        #[arg(long)]
+        encrypt: bool,
+
+        /// NAS remote name for `remote sync -d push`
+        #[arg(long, default_value = "nas-lan")]
+        nas_remote: String,
+    },
+
+    /// Proxy to Andrew-Skill / ASM (not a memory store)
+    Skills {
+        #[command(subcommand)]
+        command: skills::SkillsCommand,
+    },
+
+    /// Open the terminal UI (`chronicle-tui` / `hstry-tui`)
+    Tui,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1358,6 +1388,30 @@ async fn main() -> Result<()> {
             let runner = AdapterRunner::new(runtime, config.adapter_paths.clone());
             cmd_verify(&db, &runner, source, repair, cli.json).await
         }
+        Command::Backup {
+            dry_run,
+            target,
+            encrypt,
+            nas_remote,
+        } => {
+            let db = Database::open(&config.database).await?;
+            apply_storage_config(&db, &config);
+            backup::run(
+                &db,
+                &config,
+                &config_path,
+                backup::BackupOpts {
+                    dry_run,
+                    encrypt,
+                    targets: target,
+                    nas_remote,
+                },
+                cli.json,
+            )
+            .await
+        }
+        Command::Skills { command } => skills::run(command),
+        Command::Tui => skills::run_tui(),
     }
 }
 

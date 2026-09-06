@@ -12,6 +12,10 @@ workspace = true
 name = "hstry"
 path = "src/main.rs"
 
+[[bin]]
+name = "chronicle"
+path = "src/main.rs"
+
 [dependencies]
 hstry-core.workspace = true
 hstry-runtime.workspace = true

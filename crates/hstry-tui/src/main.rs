@@ -33,7 +33,12 @@ use images::ViewerState;
 use state::{App, Focus, GroupBy, Mode, Overlay, Row, SortOrder};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "TUI interface for hstry chat history")]
+#[command(
+    name = env!("CARGO_BIN_NAME"),
+    author,
+    version,
+    about = "TUI interface for Chronicle / hstry chat history"
+)]
 struct Cli {
     #[command(flatten)]
     common: CommonOpts,
