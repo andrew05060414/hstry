@@ -22,8 +22,8 @@
 | --- | --- | --- | --- |
 | ChatGPT | adapter `chatgpt-web`、`chatgpt` | `import/chatgpt`（zip 内含 `conversations.json`） | `chatgpt` / `chatgpt.com` |
 | Claude | adapter `claude-web` | `import/claude-ai` | `claude-ai` / `claude.ai` |
-| Gemini | adapter `gemini` | `<SessionRoot>/gemini/tmp/gemini-web/chats/session-<id>.jsonl` + session sync | `gemini` / `gemini_web` |
-| Grok | source id `grok-web*`（Grok CLI 也用 `grok` adapter，所以按 id 区分） | `<SessionRoot>/grok/grok-web/<id>/summary.json` + session sync | `grok` / `grok_web` |
+| Gemini | adapter `gemini` | `<SessionRoot>/gemini/tmp/gemini-web/chats/session-<id>.jsonl` + 同步一次 | `gemini` / `gemini_web` |
+| Grok | source id `grok-web*`（Grok CLI 也用 `grok` adapter，所以按 id 区分） | `<SessionRoot>/grok/grok-web/<id>/summary.json` + 同步一次 | `grok` / `grok_web` |
 
 同一网页对话可能同时出现在官方导出和浏览器扩展两个 source 中，脚本按 `external_id` 去重，保留消息最多、更新时间最新的一份。
 
