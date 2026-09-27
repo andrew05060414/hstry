@@ -1088,56 +1088,11 @@ pub async fn search_remote(
         harness_filter: opts.harness.clone(),
         tag: opts.tag.clone(),
     };
-    let payload = serde_json::to_vec(&input)?;
     let host_name = config.name.clone();
     let host = config.host.clone();
 
     let hits = tokio::task::spawn_blocking(move || {
-        let mut cmd = transport.ssh_command();
-        cmd.arg(host)
-            .arg("hstry")
-            .arg("search")
-            .arg("--json")
-            .arg("--raw")
-            .arg("--include-system")
-            .arg("--input")
-            .arg("-");
-
-        let mut child = cmd
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::Remote(format!("Failed to start ssh: {e}")))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(&payload)
-                .map_err(|e| Error::Remote(format!("Failed writing stdin: {e}")))?;
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|e| Error::Remote(format!("SSH failed: {e}")))?;
-
-        if !output.status.success() {
-            return Err(Error::Remote(format!(
-                "Remote search failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-
-        let response: JsonResponse<SearchReport> = serde_json::from_slice(&output.stdout)
-            .map_err(|e| Error::Remote(format!("Failed parsing remote response: {e}")))?;
-
-        if !response.ok {
-            return Err(Error::Remote(
-                response
-                    .error
-                    .unwrap_or_else(|| "Remote search error".to_string()),
-            ));
-        }
-
-        Ok(response.result.unwrap_or_default())
+        search_with_role_fallback(input, |input| run_remote_search(&transport, &host, input))
     })
     .await
     .map_err(|e| Error::Remote(format!("Remote search join error: {e}")))??;
@@ -1152,6 +1107,108 @@ pub async fn search_remote(
         store.machine = Some(host_name.clone());
     }
     Ok(report)
+}
+
+fn run_remote_search(
+    transport: &SshTransport,
+    host: &str,
+    input: &RemoteSearchInput,
+) -> Result<SearchReport> {
+    let payload = serde_json::to_vec(input)?;
+    let mut cmd = transport.ssh_command();
+    cmd.arg(host)
+        .arg("hstry")
+        .arg("search")
+        .arg("--json")
+        .arg("--raw")
+        .arg("--include-system")
+        .arg("--input")
+        .arg("-");
+
+    // stderr is captured so a peer's rejection can be recognised and retried.
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Remote(format!("Failed to start ssh: {e}")))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(&payload)
+            .map_err(|e| Error::Remote(format!("Failed writing stdin: {e}")))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| Error::Remote(format!("SSH failed: {e}")))?;
+
+    if !output.status.success() {
+        return Err(Error::Remote(format!(
+            "Remote search failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let response: JsonResponse<SearchReport> = serde_json::from_slice(&output.stdout)
+        .map_err(|e| Error::Remote(format!("Failed parsing remote response: {e}")))?;
+
+    if !response.ok {
+        return Err(Error::Remote(
+            response
+                .error
+                .unwrap_or_else(|| "Remote search error".to_string()),
+        ));
+    }
+
+    Ok(response.result.unwrap_or_default())
+}
+
+/// Role value a peer rejected as `unknown variant `x``, if the error names one.
+fn rejected_role(error: &Error) -> Option<&str> {
+    let Error::Remote(message) = error else {
+        return None;
+    };
+    let rest = &message[message.find("unknown variant `")? + "unknown variant `".len()..];
+    Some(&rest[..rest.find('`')?])
+}
+
+/// Run a remote search, dropping role filters an older peer does not know.
+///
+/// Peers built before a role existed reject the whole request. Retrying without
+/// that role keeps the rest of the filter; the caller still filters roles
+/// locally, so only messages of the dropped role are missing from that peer.
+fn search_with_role_fallback(
+    mut input: RemoteSearchInput,
+    mut run: impl FnMut(&RemoteSearchInput) -> Result<SearchReport>,
+) -> Result<SearchReport> {
+    let mut dropped = Vec::new();
+    loop {
+        let error = match run(&input) {
+            Ok(mut report) => {
+                if !dropped.is_empty() {
+                    report.warnings.push(format!(
+                        "Remote hstry is older and does not support role filter {}; \
+                         searched without it (upgrade the remote)",
+                        dropped.join(", ")
+                    ));
+                }
+                return Ok(report);
+            }
+            Err(error) => error,
+        };
+        let Some(role) = rejected_role(&error).map(str::to_owned) else {
+            return Err(error);
+        };
+        let Some(roles) = input.role.as_mut().filter(|roles| roles.contains(&role)) else {
+            return Err(error);
+        };
+        roles.retain(|r| *r != role);
+        if roles.is_empty() {
+            return Err(error);
+        }
+        dropped.push(role);
+    }
 }
 
 pub async fn search_remotes(
@@ -2398,5 +2455,89 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    fn role_search_input(roles: &[&str]) -> RemoteSearchInput {
+        RemoteSearchInput {
+            query: "q".into(),
+            limit: None,
+            offset: None,
+            source: None,
+            workspace: None,
+            mode: None,
+            after: None,
+            before: None,
+            role: Some(roles.iter().map(|r| (*r).to_owned()).collect()),
+            model: None,
+            harness_filter: None,
+            tag: None,
+        }
+    }
+
+    const OLD_PEER_ERROR: &str = "Remote search failed: Error: unknown variant `other`, \
+        expected one of `user`, `assistant`, `system`, `tool`";
+
+    #[test]
+    fn remote_search_retries_without_role_an_old_peer_rejects() {
+        let mut sent = Vec::new();
+        let report = search_with_role_fallback(
+            role_search_input(&["user", "assistant", "tool", "other"]),
+            |input| {
+                sent.push(input.role.clone().unwrap_or_default());
+                if input
+                    .role
+                    .as_ref()
+                    .is_some_and(|r| r.iter().any(|r| r == "other"))
+                {
+                    Err(Error::Remote(OLD_PEER_ERROR.into()))
+                } else {
+                    Ok(SearchReport::default())
+                }
+            },
+        )
+        .expect("retry without `other` should succeed");
+
+        assert_eq!(
+            sent,
+            vec![
+                vec!["user", "assistant", "tool", "other"],
+                vec!["user", "assistant", "tool"],
+            ]
+        );
+        assert_eq!(
+            report.warnings,
+            vec![
+                "Remote hstry is older and does not support role filter other; \
+                 searched without it (upgrade the remote)"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_search_keeps_unrelated_errors() {
+        let mut calls = 0;
+        let err = search_with_role_fallback(role_search_input(&["user"]), |_| {
+            calls += 1;
+            Err(Error::Remote(
+                "Remote search failed: connection refused".into(),
+            ))
+        })
+        .expect_err("non-role errors must surface");
+        assert_eq!(calls, 1);
+        assert_eq!(
+            err.to_string(),
+            "Remote error: Remote search failed: connection refused"
+        );
+
+        // A rejected role the request never sent (or the only role) is not retried.
+        let mut calls = 0;
+        let err = search_with_role_fallback(role_search_input(&["other"]), |_| {
+            calls += 1;
+            Err(Error::Remote(OLD_PEER_ERROR.into()))
+        })
+        .expect_err("dropping the only role would widen the search");
+        assert_eq!(calls, 1);
+        assert!(err.to_string().contains("unknown variant `other`"));
     }
 }
