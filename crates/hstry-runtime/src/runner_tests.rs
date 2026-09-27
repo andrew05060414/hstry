@@ -726,4 +726,30 @@ mod adapter_runner_tests {
         assert!(adapters.contains(&"valid".to_string()));
         assert!(!adapters.contains(&"invalid".to_string()));
     }
+
+    #[tokio::test]
+    async fn stalled_detect_times_out_instead_of_hanging() {
+        // Stands in for a probe blocked on a macOS privacy prompt: never answers.
+        if which::which("node").is_err() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let adapter = dir.path().join("adapter.mjs");
+        std::fs::write(&adapter, "setInterval(() => {}, 1000);\n").unwrap();
+
+        let runner = AdapterRunner::new(Runtime::from_kind(RuntimeKind::Node), vec![])
+            .with_probe_timeout(std::time::Duration::from_secs(1));
+        let started = std::time::Instant::now();
+        let err = runner
+            .detect(&adapter, "/nonexistent")
+            .await
+            .expect_err("a stalled probe must time out");
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert!(
+            err.to_string().contains("detect timed out after 1s"),
+            "{err}"
+        );
+    }
 }
