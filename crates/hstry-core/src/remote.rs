@@ -808,15 +808,23 @@ pub async fn export_delta(
 }
 
 /// Merge a satellite delta into the live hub database under `namespace`.
+///
+/// With `delete_delta`, a successful merge also removes the delta file and
+/// its SQLite sidecars; a failed merge keeps them for inspection.
 pub async fn ingest_into_hub(
     hub: &Database,
     delta_path: &Path,
     namespace: &str,
     lock_path: &Path,
+    delete_delta: bool,
 ) -> Result<SyncResult> {
     let _lock = crate::checkpoint::acquire_ingest_lock(lock_path)?;
     let mut result = merge_databases(hub, delta_path, namespace).await?;
     result.direction = SyncDirection::Push;
+    if delete_delta {
+        // The merge has closed its handle on the delta by now.
+        crate::checkpoint::remove_sqlite_files(delta_path)?;
+    }
     Ok(result)
 }
 
@@ -2032,6 +2040,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ingest_with_delete_leaves_inbox_empty() {
+        use crate::models::Source;
+
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Database::open(&dir.path().join("hub.db")).await.unwrap();
+        let lock = dir.path().join("hub.ingest.lock");
+
+        let inbox = tempfile::tempdir().unwrap();
+        let delta_path = inbox.path().join("arknights-1.db");
+        let delta = Database::open(&delta_path).await.unwrap();
+        delta
+            .upsert_source(&Source {
+                id: "cursor-win".to_string(),
+                adapter: "cursor".to_string(),
+                path: Some("/win".to_string()),
+                last_sync_at: Some(Utc::now()),
+                config: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        delta.close().await;
+        // Sidecars as found in the NAS inbox: a truncated WAL, the shared
+        // memory index, and a stale rollback journal. Create without
+        // truncating: on Windows SQLite may still have `-shm` mapped here.
+        for suffix in ["-wal", "-shm", "-journal"] {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(inbox.path().join(format!("arknights-1.db{suffix}")))
+                .unwrap();
+        }
+
+        ingest_into_hub(&hub, &delta_path, "arknights", &lock, true)
+            .await
+            .unwrap();
+
+        let left: Vec<_> = std::fs::read_dir(inbox.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, Vec::<std::ffi::OsString>::new());
+        let ids: Vec<_> = hub
+            .list_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec!["arknights:cursor-win".to_string()]);
+        hub.close().await;
+    }
+
+    #[tokio::test]
+    async fn failed_ingest_with_delete_keeps_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Database::open(&dir.path().join("hub.db")).await.unwrap();
+        let lock = dir.path().join("hub.ingest.lock");
+
+        let inbox = tempfile::tempdir().unwrap();
+        let delta_path = inbox.path().join("arknights-1.db");
+        std::fs::write(&delta_path, b"not a sqlite database").unwrap();
+
+        let result = ingest_into_hub(&hub, &delta_path, "arknights", &lock, true).await;
+
+        assert!(result.is_err());
+        assert!(delta_path.exists());
+        hub.close().await;
+    }
+
+    #[tokio::test]
     async fn ingest_two_namespaces_without_clobbering() {
         use crate::models::{MessageRole, Source};
 
@@ -2096,7 +2174,7 @@ mod tests {
         win.close().await;
 
         let lock = dir.path().join("hub.ingest.lock");
-        ingest_into_hub(&hub, &win_path, "arknights", &lock)
+        ingest_into_hub(&hub, &win_path, "arknights", &lock, false)
             .await
             .unwrap();
 
@@ -2156,7 +2234,7 @@ mod tests {
         .unwrap();
         mac.close().await;
 
-        ingest_into_hub(&hub, &mac_path, "macbook", &lock)
+        ingest_into_hub(&hub, &mac_path, "macbook", &lock, false)
             .await
             .unwrap();
 
