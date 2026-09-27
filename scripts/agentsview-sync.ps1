@@ -12,6 +12,7 @@ param(
     [string]$SessionRoot,
     [string]$BackupRoot,
     [int]$BatchSize = 100,
+    [int]$RequestTimeoutSec = 1800,
     [int]$IntervalSeconds = 900,
     [switch]$Full,
     [switch]$DryRun,
@@ -226,7 +227,7 @@ function Invoke-AgentsViewForm {
         Uri = "$AgentsViewUrl$Path"
         Headers = Get-AgentsViewHeaders
         Form = @{ file = Get-Item -LiteralPath $File }
-        TimeoutSec = 600
+        TimeoutSec = $RequestTimeoutSec
     }
     return Invoke-RestMethod @request
 }
@@ -240,7 +241,7 @@ function Invoke-AgentsViewSessionSync {
         Headers = Get-AgentsViewHeaders
         ContentType = 'application/json'
         Body = @{ path = $File } | ConvertTo-Json
-        TimeoutSec = 600
+        TimeoutSec = $RequestTimeoutSec
     }
     return Invoke-RestMethod @request
 }
