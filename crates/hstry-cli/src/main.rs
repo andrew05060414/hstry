@@ -788,7 +788,7 @@ enum HubCommand {
         #[arg(long)]
         namespace: String,
 
-        /// Delete the delta file after a successful ingest
+        /// Delete the delta file and its SQLite sidecars after a successful ingest
         #[arg(long)]
         delete: bool,
     },
@@ -7113,13 +7113,11 @@ async fn cmd_hub(config: &Config, command: HubCommand, json: bool) -> Result<()>
             apply_storage_config(&db, config);
             let lock_path = hstry_core::checkpoint::ingest_lock_path(&config.database);
             let namespace = hstry_core::config::sanitize_device_namespace(&namespace);
-            let result = hstry_core::remote::ingest_into_hub(&db, &file, &namespace, &lock_path)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let result =
+                hstry_core::remote::ingest_into_hub(&db, &file, &namespace, &lock_path, delete)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
             db.close().await;
-            if delete {
-                std::fs::remove_file(&file)?;
-            }
             if json {
                 return emit_json(JsonResponse {
                     ok: true,
