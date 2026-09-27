@@ -2,15 +2,18 @@
 
 > 创建日期：2026-09-27
 > 最后更新：2026-09-27
-> 版本：1.0
+> 版本：2.0
 > 关联：andrew05060414/chronicle#61（退役计划）、#65（网页对话导入 AgentsView）
 
 ## 1. 结论
 
-Chronicle 是整个记忆系统的总称，下面两个组件各管一段：
+> 2.0 修订：经三份调研后，分工改为"AgentsView 读所有 agent 日志；hstry 只管网页对话；原始文件备份交给 restic"。以第 11 节为准，第 4–8 节保留为 1.0 的调研记录。
 
-- **hstry：采集和存档。** 接收浏览器插件抓到的网页对话，读取各机器的 agent 日志，汇总到 NAS，负责 3-2-1 备份。网页对话的正本只在这里，所以 hstry 不退役，只是不再作为主要的搜索入口。
-- **AgentsView：检索和查看。** 负责搜索（中文分词、语义检索）、会话浏览界面、MCP 接口和 recall 提取。
+Chronicle 是整个记忆系统的总称，下面三块各管一段：
+
+- **AgentsView：读取、检索和查看。** 解析各机器的全部 agent 日志，负责搜索（中文分词、语义检索）、会话浏览界面、MCP 接口、recall 提取，以及多机汇总到 NAS 的 PostgreSQL。
+- **hstry（瘦身）：网页对话。** 接收浏览器插件抓到的网页对话，保存正本并汇总到 NAS，经 NAS 上的桥送进 AgentsView；另保留冻结的旧档案。网页对话不是本机文件，restic 备份不到，所以这部分只能由 hstry 负责。
+- **restic：原始文件备份。** 每台机器备份核心 agent 的原始会话文件，NAS 放主库，再送一份到异地，能恢复回原位。
 
 网页对话从 hstry 转进 AgentsView 的"桥"**只在 NAS 上跑一处**：读 NAS 上的 hstry 汇总库，写进 NAS 上一个专用的可写 AgentsView 实例，再推到 NAS 的 PostgreSQL。这样 Windows 和 Mac 都不用装同步脚本，浏览器插件装在哪台机器，数据都走这一条路。
 
@@ -193,3 +196,50 @@ Chronicle 是整个记忆系统的总称，下面两个组件各管一段：
 - hstry 同步时 node 子进程的峰值内存，以及 Ollama 加载 bge-m3 时的峰值：未测。
 - PostgreSQL 汇总库的中文检索效果：本机 SQLite 有中文分词插件，PostgreSQL 不加载它，这一项沿用 #61 的待测。
 - 已知限制：ChatGPT 已导入的对话后续追加的消息进不了 AgentsView。要解决，只能向上游提需求，而且需要 Andrew 先同意。
+
+## 11. 2.0 修订：最终分工与优先级（2026-09-27）
+
+### 11.1 三份调研的结论
+
+1. **谁来读 agent 日志：AgentsView。**
+   - 实测 hstry 的 `tool_calls` 表是 0 行，4117 个会话里只有 18 个有 token 记录；Claude Code 子 agent 被跳过，Cursor 按 2 万字截断。
+   - AgentsView 同一批数据有 36.7 万条工具调用、5.8 万条用量记录。
+   - 让 hstry 补到同等粒度再喂给 AgentsView，需要为每种 agent 反向生成原生文件，工程量估计数千行，而且会两次有损转换。结论：不做。
+2. **hstry fork 的去留：只保留网页对话相关部分。**
+   - 原始文件备份 `chronicle native`（约 5.1k 行）实际没有运行：
+     - 没有定时任务，只在 2026-09-22 手动跑过一次；
+     - Mac 没有部署，也没有异地副本；
+     - 恢复只能解压到隔离目录，不能放回原位；
+     - Cursor 只备了投影，Antigravity 漏了 `brain` 目录；
+     - 每次都整份复制且不清理，10 个快照已占 12.6 GB；
+     - restic 密码文件和数据放在同一台机器上。
+   - 改为直接用 restic（或 Kopia）加定时任务。
+   - agent 日志适配器、hub 检索、TUI、hstry-mcp、recall/mmry、skills 代理，逐步冻结或删除。
+3. **网页对话：保留自研扩展，不改成 AgentsView 插件。**
+   - 市面上没有同时满足"多站点、后台自动增量、落本地、能进 AgentsView"的开源项目。最接近的 egroup-labs/kept 只输出 Markdown。
+   - AgentsView 没有数据源插件机制。它的 CORS 白名单只接受 http/https 来源，扩展请求默认会被拒。
+   - 扩展直连 AgentsView 还有几个问题：ChatGPT 追加的消息会丢；Gemini 和 Grok 没有导入接口；多台机器之间会发生会话归属冲突。
+4. **检索：不新增记忆引擎。**
+   - 需求是找回原始会话，Mem0、AgentMemory、Zep 这类引擎解决的是事实提炼。
+   - 最新 C 集 153 题 `semantic --pg` 的成绩是 R@5 58、R@30 73，有 80 题连前 30 都没进，所以问题主要在召回，不在排序。
+   - 重排和向量模型的测试已单独开会话进行。
+
+### 11.2 扩展已知缺陷
+
+以下按代码推断，待修复会话逐条核实：
+
+- ChatGPT 只遍历 `/backend-api/conversations`，很可能漏掉项目会话和归档会话。与官方导出对比，扩展运行期间新建的 93 个会话没有抓到。
+- Claude 按数组顺序平铺消息，编辑或重新生成过的会话，多个分支可能混在一起。
+- 附件和图片基本没有保存。
+- Gemini 的时间戳用的是会话级时间，而且遇到 429 不退避；Perplexity 单个会话最多取 100 条。
+- 如果某个会话一直失败，增量进度会被卡住。
+
+### 11.3 执行顺序
+
+| 顺序 | 事项 | 执行方式 | 需要 Andrew |
+| --- | --- | --- | --- |
+| 1 | restic 原始文件备份：每台机器覆盖 Claude Code、Codex、Antigravity（含 `brain`）、Grok、Cursor（完整 `state.vscdb` 和 `workspaceStorage`）；每小时一次；NAS 主库，外加异地副本；设保留策略；每个 agent 做一次恢复演练 | 独立会话 | 自己设置密码；方案确认 |
+| 2 | 小修：NAS `backup.sh` 的 hstry 路径改为 `hstry-win.db` 并用在线备份；查 NAS checkpoint 为何 9-08 之后停了；`chronicle backup` 打开加密；Mac Time Machine 报错 | 本会话 | 批准配置变更 |
+| 3 | 修扩展：ChatGPT 项目会话和归档会话、Claude 分支、Gemini 和 Perplexity 的缺陷、卡住的进度；浏览器改从稳定目录加载；打开 Gemini 和 Grok；在 Mac 上安装 | 独立会话 | 在浏览器里操作 |
+| 4 | NAS 桥：`chronicle` 子命令加可写 AgentsView 实例 `chronicle-web`；网页会话的归属从 Windows 移交给 NAS | 本会话或后续会话 | 删除旧归属前批准 |
+| 5 | 入口迁到 AgentsView；统一各机器的 AgentsView 版本；各机器停用 hstry 的 agent 数据源 | 后续 | — |
