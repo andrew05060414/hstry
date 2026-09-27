@@ -21,6 +21,8 @@ check('fresh provider is informative', providerState(undefined, true), { tone: '
 check('disabled provider is paused', providerState(undefined, false).label, 'Paused');
 check('offline error is actionable', friendlyError('cannot reach hstry-api at x'), 'The local hstry API is offline. Start it, then try again.');
 check('login error is actionable', friendlyError('claude.ai: not logged in'), 'Open this provider and sign in, then sync again.');
+check('missing site access is named, not reported as API offline', friendlyError('site access to chatgpt.com is not granted — open the details page'), 'Allow the extension to read chatgpt.com: extension details → Site access → On all sites.');
+check('blocked provider fetch points at site access', friendlyError("request to grok.com was blocked (Failed to fetch) — check the extension's site access for grok.com and that the site opens in this browser"), 'Allow the extension to read grok.com: extension details → Site access → On all sites.');
 check('recovered API makes stale offline failure retryable', providerState({
   lastRunMs: now - 27 * 60_000,
   lastError: 'cannot reach hstry-api at http://127.0.0.1:3000/ingest',

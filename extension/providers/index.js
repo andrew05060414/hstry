@@ -10,6 +10,7 @@ export const PROVIDERS = {
   chatgpt: {
     name: 'ChatGPT',
     site: 'chatgpt.com',
+    origin: 'https://chatgpt.com/*',
     description: 'Personal and workspace conversations',
     defaultEnabled: true,
     sourceId: 'chatgpt-web',
@@ -19,6 +20,7 @@ export const PROVIDERS = {
   claude: {
     name: 'Claude',
     site: 'claude.ai',
+    origin: 'https://claude.ai/*',
     description: 'Available organizations',
     defaultEnabled: true,
     sourceId: 'claude-web',
@@ -28,6 +30,7 @@ export const PROVIDERS = {
   gemini: {
     name: 'Gemini',
     site: 'gemini.google.com',
+    origin: 'https://gemini.google.com/*',
     description: 'Conversations from your Google account',
     defaultEnabled: true,
     sourceId: 'gemini-web',
@@ -37,6 +40,7 @@ export const PROVIDERS = {
   grok: {
     name: 'Grok',
     site: 'grok.com',
+    origin: 'https://grok.com/*',
     description: 'Conversations from grok.com',
     defaultEnabled: true,
     sourceId: 'grok-web',
@@ -46,6 +50,7 @@ export const PROVIDERS = {
   perplexity: {
     name: 'Perplexity',
     site: 'perplexity.ai',
+    origin: 'https://www.perplexity.ai/*',
     description: 'Threads from your Perplexity library',
     defaultEnabled: false,
     sourceId: 'perplexity-web',
