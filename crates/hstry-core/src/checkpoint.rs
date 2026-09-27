@@ -391,6 +391,20 @@ pub(crate) fn safe_remove_file(path: &Path) -> Result<()> {
     }
 }
 
+/// Remove a SQLite database file and its `-wal`/`-shm`/`-journal` sidecars.
+///
+/// Every handle to `path` must be closed first. Removing only the main file
+/// leaves the sidecars behind forever, since nothing reopens that path again.
+pub(crate) fn remove_sqlite_files(path: &Path) -> Result<()> {
+    safe_remove_file(path)?;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        safe_remove_file(Path::new(&sidecar))?;
+    }
+    Ok(())
+}
+
 fn safe_create_file(path: &Path) -> std::io::Result<File> {
     let mut attempts = 0;
     loop {
