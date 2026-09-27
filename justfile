@@ -252,6 +252,10 @@ changelog version:
 
 # === Adapters ===
 
+# Export the browser extension from origin/main into a stable load-unpacked dir (--dest DIR sets it once)
+install-extension *ARGS:
+    node scripts/install-extension.mjs {{ARGS}}
+
 # Copy latest adapters to config directory (overwrites existing)
 update-adapters:
     @mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/hstry/adapters"

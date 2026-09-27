@@ -83,8 +83,11 @@ jobs:
         run: |
           bun run extension/test/backoff.js
           bun run extension/test/chatgpt-completeness.js
+          bun run extension/test/chatgpt-projects.js
+          bun run extension/test/claude-branches.js
           bun run extension/test/claude-organizations.js
           bun run extension/test/full-resync.js
+          bun run extension/test/gemini-perplexity-robustness.js
           bun run extension/test/gemini-resume.js
           bun run extension/test/grok.js
           bun run extension/test/new-providers.js

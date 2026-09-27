@@ -1,4 +1,5 @@
-// hstry sync service worker: polls AI chat platforms on an alarm and pushes
+// Chronicle web capture service worker (alarm and log names keep the
+// historical "hstry-sync" prefix for compatibility): polls AI chat platforms on an alarm and pushes
 // new/updated conversations to a local hstry-api instance (POST /ingest).
 
 import { NotLoggedInError } from './lib/common.js';

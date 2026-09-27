@@ -8,11 +8,11 @@ function check(label, actual, expected) {
 }
 
 const now = Date.parse('2026-07-10T12:00:00Z');
-check('new providers are opt-in', DEFAULT_PROVIDER_SETTINGS, {
+check('Gemini and Grok on by default, Perplexity opt-in', DEFAULT_PROVIDER_SETTINGS, {
   chatgpt: true,
   claude: true,
-  gemini: false,
-  grok: false,
+  gemini: true,
+  grok: true,
   perplexity: false,
 });
 check('never synced time', formatTime(null, now), 'Never');
