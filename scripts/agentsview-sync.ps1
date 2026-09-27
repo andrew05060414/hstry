@@ -25,8 +25,8 @@ $ErrorActionPreference = 'Stop'
 # How each web provider reaches AgentsView:
 # - import: AgentsView's own chat importer (served by the running daemon).
 # - native: files in the agent's native layout under $SessionRoot/<agent>, which
-#   must be listed in AgentsView's [agents.<agent>] dirs, then parsed through
-#   the daemon's session sync endpoint.
+#   must be listed in AgentsView's [agents.<agent>] dirs, then picked up by one
+#   daemon sync pass and confirmed per session id.
 $providerDefinitions = [ordered]@{
     chatgpt = [ordered]@{
         adapters = @('chatgpt-web', 'chatgpt')
@@ -47,7 +47,6 @@ $providerDefinitions = [ordered]@{
         format = 'gemini-cli'
         mode = 'native'
         agent = 'gemini'
-        syncFilter = '*.jsonl'
     }
     grok = [ordered]@{
         # The Grok CLI and the grok.com extension share the `grok` adapter;
@@ -56,7 +55,6 @@ $providerDefinitions = [ordered]@{
         format = 'grok'
         mode = 'native'
         agent = 'grok'
-        syncFilter = 'summary.json'
     }
 }
 
@@ -232,18 +230,31 @@ function Invoke-AgentsViewForm {
     return Invoke-RestMethod @request
 }
 
-function Invoke-AgentsViewSessionSync {
-    param([string]$File)
-
+function Invoke-AgentsViewSync {
+    # One daemon sync pass picks up every file written under the configured
+    # agent directories; per-file session sync is slow on a busy archive.
     $request = @{
         Method = 'Post'
-        Uri = "$AgentsViewUrl/api/v1/sessions/sync"
+        Uri = "$AgentsViewUrl/api/v1/sync?wait=true"
         Headers = Get-AgentsViewHeaders
-        ContentType = 'application/json'
-        Body = @{ path = $File } | ConvertTo-Json
         TimeoutSec = $RequestTimeoutSec
     }
-    return Invoke-RestMethod @request
+    $null = Invoke-WebRequest @request
+}
+
+function Get-AgentsViewSession {
+    param([string]$Id)
+
+    try {
+        $request = @{
+            Uri = "$AgentsViewUrl/api/v1/sessions/$([uri]::EscapeDataString($Id))"
+            Headers = Get-AgentsViewHeaders
+            TimeoutSec = 60
+        }
+        return Invoke-RestMethod @request
+    } catch {
+        return $null
+    }
 }
 
 function Export-Batch {
@@ -281,6 +292,7 @@ function Sync-Provider {
 
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("chronicle-agentsview-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $temp | Out-Null
+    $pendingNative = @()
     try {
         for ($offset = 0; $offset -lt $changed.Count; $offset += $BatchSize) {
             $batch = @($changed[$offset..([Math]::Min($offset + $BatchSize, $changed.Count) - 1)])
@@ -303,24 +315,14 @@ function Sync-Provider {
                 $exportDir = Join-Path $batchDir 'export'
                 Export-Batch $definition.format $ids $exportDir
                 $agentRoot = Join-Path $SessionRoot $definition.agent
-                $files = @(Get-ChildItem -LiteralPath $exportDir -Recurse -File)
-                $synced = 0
-                $batchErrors = 0
-                foreach ($file in $files) {
+                foreach ($file in @(Get-ChildItem -LiteralPath $exportDir -Recurse -File)) {
                     $relative = [System.IO.Path]::GetRelativePath($exportDir, $file.FullName)
                     $target = Join-Path $agentRoot $relative
                     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
                     Copy-Item -LiteralPath $file.FullName -Destination $target -Force
-                    if ($file.Name -like $definition.syncFilter) {
-                        $session = Invoke-AgentsViewSessionSync $target
-                        $synced++
-                        if ([int64]$session.message_count -gt 0) { $summary.imported++ } else { $batchErrors++ }
-                    }
                 }
-                if ($synced -ne $batch.Count) {
-                    throw "Chronicle exported $($batch.Count) $ProviderName conversations but AgentsView synced $synced session files"
-                }
-                $summary.errors += $batchErrors
+                $pendingNative += $batch
+                continue
             }
 
             # A batch with errors stays pending so the next run retries it;
@@ -328,6 +330,21 @@ function Sync-Provider {
             if ($batchErrors -gt 0) { continue }
             foreach ($row in $batch) {
                 $State.conversations[(Get-StateKey $ProviderName $row)] = Get-Fingerprint $row
+            }
+            Write-SyncState $State
+        }
+
+        if ($pendingNative.Count -gt 0) {
+            Invoke-AgentsViewSync
+            foreach ($row in $pendingNative) {
+                $session = if ($row.external_id) { Get-AgentsViewSession "$($definition.agent):$($row.external_id)" }
+                if ($session -and [int64]$session.message_count -gt 0) {
+                    $summary.imported++
+                    $State.conversations[(Get-StateKey $ProviderName $row)] = Get-Fingerprint $row
+                } else {
+                    # Stays pending; the next run rewrites the file and checks again.
+                    $summary.errors++
+                }
             }
             Write-SyncState $State
         }
