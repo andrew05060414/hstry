@@ -8,6 +8,11 @@ engine and is maintained at [andrew05060414/chronicle](https://github.com/andrew
 
 Universal AI chat history database. Aggregates conversations from local coding agents (Cursor, Codex, Claude Code, Pi, OpenCode, QClaw, WorkBuddy, Antigravity CLI, and others) into a single searchable SQLite database. Optional NAS hub/satellite sync keeps Windows and Mac histories namespaced.
 
+Chronicle / HSTRY is the backup and archive layer for chat records. AgentsView is
+the primary retrieval surface for Andrew's knowledge workflow, including vector
+search; Chronicle's CLI and search API remain useful for archive verification,
+export, and recovery.
+
 Web ChatGPT / Gemini live ingest is a later milestone; takeout export adapters already exist.
 
 ## Features
@@ -402,6 +407,7 @@ hstry-tui
 | `jan` | `~/jan/threads` | Jan.ai |
 | `lmstudio` | `~/.cache/lm-studio/conversations` | LM Studio |
 | `openwebui` | `~/.open-webui/data` (or `/app/backend/data`) | Open WebUI |
+| `astrbot` | AstrBot `data_v4.db` or its data directory | AstrBot (read-only SQLite) |
 
 ### Web Exports (manual download)
 
@@ -419,6 +425,10 @@ Adapters are TypeScript modules that parse chat history from specific tools. Eac
 
 - `detect(path)` - Check if a path contains valid data
 - `parse(path, options)` - Extract conversations and messages
+
+The AstrBot adapter is intentionally read-only and supports incremental parsing.
+See [`docs/astrbot-source.md`](docs/astrbot-source.md) for the NAS registration,
+first-import approval gate, and the AgentsView handoff boundary.
 
 Add custom adapters by placing them in `adapter_paths`, or manage repositories with:
 
