@@ -2186,16 +2186,40 @@ impl ServiceState {
 
 fn build_watcher(event_tx: mpsc::Sender<PathBuf>) -> Result<RecommendedWatcher> {
     let watcher = RecommendedWatcher::new(
-        move |res: notify::Result<notify::Event>| {
-            if let Ok(event) = res
-                && let Some(path) = event.paths.first()
-            {
-                let _ = event_tx.blocking_send(path.clone());
-            }
-        },
+        move |res: notify::Result<notify::Event>| forward_watch_event(&event_tx, res),
         notify::Config::default(),
     )?;
     Ok(watcher)
+}
+
+/// Hand a watcher event to the service loop without ever blocking.
+///
+/// The handler runs on notify's event-loop thread, which also services
+/// `watch()`/`unwatch()`. On Linux, registering a recursive watch opens every
+/// directory, and inotify reports those opens on the directories already
+/// watched. Blocking here on a full channel while the service task waits in
+/// `watch()` deadlocks both, so the loop never reaches sync or checkpoints.
+/// Events are only hints (the audit tick resyncs everything), so drop reads
+/// and drop on overflow.
+fn forward_watch_event(event_tx: &mpsc::Sender<PathBuf>, res: notify::Result<notify::Event>) {
+    let Ok(event) = res else {
+        return;
+    };
+    if !is_change_event(&event.kind) {
+        return;
+    }
+    if let Some(path) = event.paths.first() {
+        let _ = event_tx.try_send(path.clone());
+    }
+}
+
+fn is_change_event(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, EventKind};
+    match kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
+    }
 }
 
 async fn collect_watch_paths(
@@ -2323,6 +2347,126 @@ fn is_candidate_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn watch_event(kind: notify::EventKind, path: &str) -> notify::Result<notify::Event> {
+        Ok(notify::Event::new(kind).add_path(PathBuf::from(path)))
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<PathBuf>) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        while let Ok(path) = rx.try_recv() {
+            out.push(path);
+        }
+        out
+    }
+
+    #[test]
+    fn forward_watch_event_keeps_changes_and_drops_reads() {
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, EventKind, ModifyKind,
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+        forward_watch_event(
+            &tx,
+            watch_event(
+                EventKind::Access(AccessKind::Open(AccessMode::Any)),
+                "/open",
+            ),
+        );
+        forward_watch_event(
+            &tx,
+            watch_event(
+                EventKind::Access(AccessKind::Close(AccessMode::Read)),
+                "/close-read",
+            ),
+        );
+        forward_watch_event(
+            &tx,
+            watch_event(EventKind::Access(AccessKind::Read), "/read"),
+        );
+        forward_watch_event(
+            &tx,
+            watch_event(
+                EventKind::Access(AccessKind::Close(AccessMode::Write)),
+                "/close-write",
+            ),
+        );
+        forward_watch_event(
+            &tx,
+            watch_event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                "/modify",
+            ),
+        );
+        forward_watch_event(
+            &tx,
+            watch_event(EventKind::Create(CreateKind::File), "/create"),
+        );
+        forward_watch_event(&tx, Err(notify::Error::generic("boom")));
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                PathBuf::from("/close-write"),
+                PathBuf::from("/modify"),
+                PathBuf::from("/create"),
+            ]
+        );
+    }
+
+    #[test]
+    fn forward_watch_event_drops_instead_of_blocking_when_full() {
+        use notify::event::{DataChange, EventKind, ModifyKind};
+        let (tx, mut rx) = mpsc::channel(1);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for path in ["/a", "/b", "/c"] {
+                forward_watch_event(
+                    &tx,
+                    watch_event(EventKind::Modify(ModifyKind::Data(DataChange::Any)), path),
+                );
+            }
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("watch event handler blocked on a full channel");
+        assert_eq!(drain(&mut rx), vec![PathBuf::from("/a")]);
+    }
+
+    /// Regression for the NAS hub hang: registering a large recursive watch
+    /// floods inotify with directory-open events while nobody drains the
+    /// channel yet. A later `watch()` must still return.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn watch_registration_survives_undrained_event_flood() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tree = dir.path().join("tree");
+        for i in 0..300 {
+            std::fs::create_dir_all(tree.join(format!("d{i}")).join("nested")).expect("mkdir");
+        }
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).expect("mkdir other");
+
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let mut watcher = build_watcher(event_tx).expect("watcher");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            watcher
+                .watch(&tree, RecursiveMode::Recursive)
+                .expect("watch tree");
+            watcher
+                .watch(&tree, RecursiveMode::Recursive)
+                .expect("rewatch tree");
+            watcher
+                .watch(&other, RecursiveMode::NonRecursive)
+                .expect("watch other");
+            let _ = done_tx.send(());
+            drop(watcher);
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("watch() deadlocked behind an undrained event channel");
+    }
 
     #[test]
     fn instant_ago_survives_offsets_longer_than_windows_uptime() {
