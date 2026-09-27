@@ -29,6 +29,25 @@ export function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+export function sleepWithJitter(baseMs, jitterMs = 300) {
+  const jitter = Math.floor((Math.random() * 2 - 1) * jitterMs);
+  return sleep(Math.max(100, baseMs + jitter));
+}
+
+export function retryAfterMilliseconds(value, now = Date.now()) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+export function assertNotCloudflareChallenge(response, provider) {
+  if (response.headers?.get('cf-mitigated')?.toLowerCase() === 'challenge') {
+    throw new RateLimitedError(`${provider} request blocked by Cloudflare challenge`, { status: 403 });
+  }
+}
+
 /** Cap on how long we honor a server-provided Retry-After (ms). */
 const MAX_BACKOFF_MS = 60_000;
 
@@ -38,22 +57,39 @@ const MAX_BACKOFF_MS = 60_000;
  * otherwise uses exponential backoff with jitter. 401/403 fail fast as
  * "not logged in" — retrying those is pointless.
  */
-export async function fetchJson(url, init = {}, { retries = 5, baseDelayMs = 1000 } = {}) {
+export async function fetchJson(url, init = {}, { retries = 2, baseDelayMs = 1000 } = {}) {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, { credentials: 'include', ...init });
+
+    assertNotCloudflareChallenge(res, new URL(url).hostname);
 
     if (res.status === 401 || res.status === 403) {
       throw new NotLoggedInError(new URL(url).hostname);
     }
 
-    if (res.status === 429 || res.status === 502 || res.status === 503) {
-      if (attempt >= retries) {
-        throw new RateLimitedError(`${init.method ?? 'GET'} ${url} -> ${res.status} (gave up after ${retries} retries)`);
+    if (res.status === 429) {
+      const retryAfterMs = retryAfterMilliseconds(res.headers.get('retry-after'));
+
+      // If retry-after is substantial (> 2s), or attempt >= retries, fail fast as RateLimitedError
+      // so the provider circuit breaker can immediately enter a protective cooldown.
+      if (attempt >= retries || (retryAfterMs !== null && retryAfterMs > 2000)) {
+        throw new RateLimitedError(
+          `${init.method ?? 'GET'} ${url} -> 429 Too Many Requests`,
+          { retryAfterMs, status: 429 }
+        );
       }
-      const retryAfter = Number(res.headers.get('retry-after'));
-      const headerMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
+
+      const backoffMs = retryAfterMs ?? (baseDelayMs * 2 ** attempt + Math.floor(Math.random() * 500));
+      await sleep(Math.min(MAX_BACKOFF_MS, backoffMs));
+      continue;
+    }
+
+    if (res.status === 502 || res.status === 503) {
+      if (attempt >= retries) {
+        throw new Error(`${init.method ?? 'GET'} ${url} -> ${res.status} (gave up after ${retries} retries)`);
+      }
       const backoffMs = baseDelayMs * 2 ** attempt + Math.floor(Math.random() * 500);
-      await sleep(Math.min(MAX_BACKOFF_MS, Math.max(headerMs, backoffMs)));
+      await sleep(Math.min(MAX_BACKOFF_MS, backoffMs));
       continue;
     }
 
@@ -64,10 +100,16 @@ export async function fetchJson(url, init = {}, { retries = 5, baseDelayMs = 100
   }
 }
 
+export function extractRetryAfter(response) {
+  return retryAfterMilliseconds(response.headers?.get('retry-after'));
+}
+
 export class RateLimitedError extends Error {
-  constructor(message) {
+  constructor(message, { retryAfterMs = null, status = 429 } = {}) {
     super(message);
     this.name = 'RateLimitedError';
+    this.retryAfterMs = retryAfterMs;
+    this.status = status;
   }
 }
 

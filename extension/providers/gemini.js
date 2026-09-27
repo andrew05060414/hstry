@@ -1,6 +1,6 @@
 // Gemini web sync through the authenticated batchexecute RPCs used by the web UI.
 
-import { NotLoggedInError, textPart, toMs } from '../lib/common.js';
+import { assertNotCloudflareChallenge, extractRetryAfter, NotLoggedInError, RateLimitedError, sleepWithJitter, textPart, toMs } from '../lib/common.js';
 
 const BASE = 'https://gemini.google.com';
 const OVERLAP_MS = 5 * 60 * 1000;
@@ -39,6 +39,12 @@ async function getSession() {
     credentials: 'include',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+  assertNotCloudflareChallenge(res, 'Gemini');
+  if (res.status === 429) {
+    throw new RateLimitedError('Gemini session request -> 429 Too Many Requests', {
+      retryAfterMs: extractRetryAfter(res),
+    });
+  }
   if (res.status === 401 || res.status === 403 || res.url.includes('accounts.google.com')) {
     throw new NotLoggedInError('gemini.google.com');
   }
@@ -70,7 +76,12 @@ async function batchExecute(session, rpcId, arg) {
     body,
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+  assertNotCloudflareChallenge(res, 'Gemini');
   if (res.status === 401 || res.status === 403) throw new NotLoggedInError('gemini.google.com');
+  if (res.status === 429) {
+    const retryAfterMs = extractRetryAfter(res);
+    throw new RateLimitedError(`Gemini ${rpcId} -> 429 Too Many Requests`, { retryAfterMs });
+  }
   if (!res.ok) throw new Error(`Gemini ${rpcId} -> ${res.status}`);
   return parseRpcResponse(await res.text(), rpcId);
 }
@@ -99,8 +110,10 @@ async function listChats(session, sinceMs) {
         updatedAt,
       });
     }
-    if (reachedOld || !nextCursor || nextCursor === cursor) break;
+    if (reachedOld || !nextCursor) break;
+    if (nextCursor === cursor) throw new Error('Gemini chat list repeated its pagination cursor');
     cursor = nextCursor;
+    if (page === 199) throw new Error('Gemini chat list exceeded the 200-page safety limit');
   }
   return [...chats.values()];
 }
@@ -119,8 +132,10 @@ async function readChat(session, summary) {
     const pageTurns = Array.isArray(data?.[0]) ? data[0] : [];
     turns.push(...pageTurns);
     const nextCursor = data?.[1] ?? null;
-    if (!nextCursor || nextCursor === cursor) break;
+    if (!nextCursor) break;
+    if (nextCursor === cursor) throw new Error(`Gemini conversation ${summary.id} repeated its pagination cursor`);
     cursor = nextCursor;
+    if (page === 199) throw new Error(`Gemini conversation ${summary.id} exceeded the 200-page safety limit`);
   }
   turns.reverse();
 
@@ -167,12 +182,19 @@ export async function syncGemini({ state, push, register = async () => {}, log, 
   let processed = startIndex;
   let batch = [];
   for (const summary of summaries.slice(startIndex, endIndex)) {
+    if (processed > startIndex) await sleepWithJitter(1500, 300);
     try {
       const conversation = await readChat(session, summary);
       if (conversation) batch.push(conversation);
+      else throw new Error('Gemini returned no parseable conversation messages');
     } catch (error) {
+      if (error instanceof RateLimitedError) {
+        if (batch.length) await push('gemini-web', 'gemini', batch);
+        throw error;
+      }
       failures++;
       log(`gemini: skipping conversation ${summary.id}: ${error.message}`);
+      if (/repeated its pagination cursor|exceeded the 200-page safety limit/i.test(error.message)) throw error;
     }
     processed++;
     await report({ processed });
@@ -202,4 +224,4 @@ export async function syncGemini({ state, push, register = async () => {}, log, 
   };
 }
 
-export const geminiInternals = { extractSession, parseRpcResponse };
+export const geminiInternals = { extractSession, parseRpcResponse, listChats, readChat };

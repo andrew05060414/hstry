@@ -51,6 +51,21 @@ export function providerState(entry, enabled = true, { apiConnected = false } = 
       detail: `${progressDetail(entry.progress ?? {})} · next batch queued`,
     };
   }
+  if (entry?.cooldownUntilMs && Date.now() < entry.cooldownUntilMs) {
+    const timeStr = new Date(entry.cooldownUntilMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return {
+      tone: 'muted',
+      label: 'Rate limited',
+      detail: `Paused to avoid rate limits until ${timeStr}.`,
+    };
+  }
+  if (!entry?.running && entry?.lastNotice) {
+    return {
+      tone: 'idle',
+      label: 'Deferred',
+      detail: entry.lastNotice,
+    };
+  }
   if (!entry?.lastRunMs) return { tone: 'idle', label: 'Ready to sync', detail: 'No sync has run yet.' };
   if (
     apiConnected &&
@@ -102,8 +117,8 @@ export function friendlyError(error) {
   if (text.includes('rejected the token') || text.includes('401')) {
     return 'The ingest token does not match the local API.';
   }
-  if (text.includes('429') || text.includes('RateLimited')) {
-    return 'The provider is rate-limiting requests. Wait a few minutes and retry.';
+  if (text.includes('429') || text.includes('RateLimited') || text.includes('Rate limited')) {
+    return 'The provider is rate-limiting requests. Sync is cooling down to protect your session.';
   }
   return text;
 }

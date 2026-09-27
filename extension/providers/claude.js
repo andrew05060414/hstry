@@ -2,9 +2,11 @@
 // authenticated with the browser session cookies (no bearer token needed).
 
 import {
+  RateLimitedError,
   fetchJson,
   shortId,
   sleep,
+  sleepWithJitter,
   textPart,
   thinkingPart,
   toolCallPart,
@@ -15,7 +17,7 @@ import {
 const BASE = 'https://claude.ai';
 const PAGE_SIZE = 50;
 const OVERLAP_MS = 5 * 60 * 1000;
-const THROTTLE_MS = 400;
+const THROTTLE_MS = 1500;
 
 async function listOrganizations() {
   const data = await fetchJson(`${BASE}/api/organizations`);
@@ -131,7 +133,7 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
       for await (const item of listUpdatedConversations(org.id, since)) {
         detected++;
         await report({ phase: 'importing', detected, processed });
-        if (!first) await sleep(THROTTLE_MS);
+        if (!first) await sleepWithJitter(THROTTLE_MS, 400);
         first = false;
         try {
           const detail = await fetchJson(
@@ -139,7 +141,14 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
           );
           const conv = toParsedConversation(detail, org.id);
           if (conv) batch.push(conv);
+          else throw new Error('Claude returned no parseable conversation messages');
         } catch (err) {
+          if (err instanceof RateLimitedError) {
+            if (batch.length > 0) {
+              total += await push(sourceId, 'claude-web', batch);
+            }
+            throw err;
+          }
           failures++;
           log(`claude: skipping conversation ${item.uuid}: ${err.message}`);
         }
@@ -151,6 +160,7 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
         }
       }
     } catch (err) {
+      if (err instanceof RateLimitedError) throw err;
       failures++;
       log(`claude: skipping organization ${key}: ${err.message}`);
     }

@@ -156,13 +156,35 @@ check('claude run 2 conversations (incremental)', claude2.conversations, 0);
 check('run 2 pushes', pushes.length, 0);
 
 // --- Verify what landed in hstry via the search API ---
-const hits = await (
-  await realFetch(`http://127.0.0.1:${PORT}/search?query=fixture&limit=10`)
+const searchEnvelope = await (
+  await realFetch(`http://127.0.0.1:${PORT}/search?query=fixture&limit=10&raw=true`)
 ).json();
-const sources = [...new Set(hits.map(h => h.source_id))].sort();
+const hits = searchEnvelope?.result?.hits;
+if (!Array.isArray(hits)) {
+  throw new TypeError(`search API returned no result.hits array: ${JSON.stringify(searchEnvelope)}`);
+}
+const sourceFor = hit => hit.source_id ?? hit.provenance?.source;
+const sources = [...new Set(hits.map(sourceFor).filter(Boolean))].sort();
 check('search finds all sources', sources, ['chatgpt-web', 'chatgpt-web-accteam1', 'claude-web']);
-const gptHit = hits.find(h => h.source_id === 'chatgpt-web' && h.role === 'assistant');
-check('gpt assistant content', gptHit?.content, 'fixture response');
+const gptHit = hits.find(h => sourceFor(h) === 'chatgpt-web' && (h.role ?? h.message?.role) === 'assistant');
+if (!gptHit) {
+  check('gpt assistant content', undefined, 'fixture response');
+} else if (typeof gptHit.content === 'string') {
+  check('gpt assistant content', gptHit.content, 'fixture response');
+} else {
+  const readResponse = await realFetch(`http://127.0.0.1:${PORT}/read`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: String(gptHit.conversation_id ?? gptHit.conversationId), options: { limit: 100 } }),
+  });
+  const readEnvelope = await readResponse.json();
+  const page = readEnvelope?.result;
+  const messages = page?.messages ?? page?.conversation?.messages;
+  const assistant = Array.isArray(messages)
+    ? messages.find(message => (message.role ?? message.message?.role) === 'assistant')
+    : null;
+  check('gpt assistant content', assistant?.content ?? assistant?.message?.content, 'fixture response');
+}
 
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

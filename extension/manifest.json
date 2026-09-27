@@ -3,7 +3,7 @@
   "name": "hstry sync",
   "version": "0.3.3",
   "description": "Background-syncs web conversations from ChatGPT, Claude, Gemini, Perplexity, and Grok into a local hstry database.",
-  "permissions": ["alarms", "storage"],
+  "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",

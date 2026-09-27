@@ -1,13 +1,13 @@
 // hstry sync service worker: polls AI chat platforms on an alarm and pushes
 // new/updated conversations to a local hstry-api instance (POST /ingest).
 
-import { NotLoggedInError } from './lib/common.js';
+import { NotLoggedInError, RateLimitedError } from './lib/common.js';
 import { DEFAULT_PROVIDER_SETTINGS, PROVIDERS } from './providers/index.js';
 
 const DEFAULT_SETTINGS = {
   port: 3000,
   token: '',
-  intervalMinutes: 15,
+  intervalMinutes: 60,
   providers: DEFAULT_PROVIDER_SETTINGS,
 };
 
@@ -35,7 +35,7 @@ async function setStatus(status) {
 }
 
 function setStatusEntry(name, entry) {
-  statusWriteQueue = statusWriteQueue.then(async () => {
+  statusWriteQueue = statusWriteQueue.catch(() => {}).then(async () => {
     const status = await getStatus();
     status[name] = entry;
     await setStatus(status);
@@ -56,7 +56,25 @@ async function clearInterruptedRuns() {
   if (changed) await setStatus(status);
 }
 
-const startupReady = clearInterruptedRuns();
+let startupReady = clearInterruptedRuns();
+// Startup storage can fail transiently. Mark the initial rejection handled so
+// it does not become an unhandled worker promise; the next sync retries it.
+startupReady.catch(() => {});
+
+async function ensureStartupReady() {
+  if (!startupReady) startupReady = clearInterruptedRuns();
+  try {
+    await startupReady;
+    await restoreContinuations();
+  } catch (error) {
+    startupReady = null;
+    throw error;
+  }
+}
+
+startupReady.then(restoreContinuations).catch(error => {
+  console.warn('[hstry-sync] could not restore pending continuations during worker startup:', error);
+});
 
 function makePush(settings, onResult = async () => {}) {
   const url = `http://127.0.0.1:${settings.port}/ingest`;
@@ -163,11 +181,32 @@ async function scheduleContinuation(providerName) {
   });
 }
 
+async function restoreContinuations() {
+  const status = await getStatus();
+  for (const [name, entry] of Object.entries(status)) {
+    if (Object.hasOwn(PROVIDERS, name) && entry?.continuationPending && !activeProviders.has(name)) {
+      await scheduleContinuation(name);
+    }
+  }
+}
+
+async function isProviderActiveInTab(site) {
+  try {
+    if (!chrome?.tabs?.query) return false;
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tabs || tabs.length === 0) return false;
+    const activeUrl = tabs[0].url ?? '';
+    return activeUrl.includes(site);
+  } catch {
+    return false;
+  }
+}
+
 async function runSync(
   trigger,
   { onlyProvider = null, full = false, onStarted = async () => {} } = {}
 ) {
-  await startupReady;
+  await ensureStartupReady();
   const settings = await getSettings();
   const status = await getStatus();
   const selected = Object.entries(PROVIDERS).filter(
@@ -178,18 +217,49 @@ async function runSync(
   );
   if (selected.length === 0) return false;
   for (const [name] of selected) activeProviders.add(name);
-  await chrome.action.setBadgeText({ text: '…' });
-
   let anyError = false;
+  try {
+    await chrome.action.setBadgeText({ text: '…' });
+  } catch (error) {
+    anyError = true;
+    for (const [name] of selected) activeProviders.delete(name);
+    console.warn('[hstry-sync] failed to update running badge:', error);
+    return false;
+  }
   let startedReported = false;
   await Promise.all(
     selected.map(async ([name, provider]) => {
+      const isAuto = trigger === 'alarm' || trigger === 'continuation';
+      const prevEntry = status[name] ?? {};
+      const isCoolingDown = prevEntry.cooldownUntilMs && Date.now() < prevEntry.cooldownUntilMs;
+
+      if (isAuto && isCoolingDown) {
+        console.warn(
+          `[hstry-sync] ${name} is cooling down until ${new Date(prevEntry.cooldownUntilMs).toLocaleTimeString()} (skipping auto sync)`
+        );
+        activeProviders.delete(name);
+        return;
+      }
+
+      try {
+      if (isAuto && (await isProviderActiveInTab(provider.site))) {
+        console.warn(
+          `[hstry-sync] ${name}: active tab detected on ${provider.site}, deferring sync to avoid disturbing user`
+        );
+        prevEntry.lastNotice = `Deferred while ${provider.site} is active in browser`;
+        await setStatusEntry(name, prevEntry);
+        activeProviders.delete(name);
+        return;
+      }
+
       const entry = {
-        ...(status[name] ?? {}),
+        ...prevEntry,
         ...(full && name === onlyProvider ? { state: {} } : {}),
         lastRunMs: Date.now(),
         trigger,
         running: true,
+        lastNotice: null,
+        cooldownUntilMs: !isAuto ? null : prevEntry.cooldownUntilMs,
         progress: {
           phase: 'discovering',
           detected: 0,
@@ -228,6 +298,7 @@ async function runSync(
         entry.lastSuccessMs = Date.now();
         entry.lastCount = result.conversations;
         entry.lastError = null;
+        entry.cooldownUntilMs = null;
         entry.running = false;
         entry.continuationPending = Boolean(result.hasMore);
         entry.progress = {
@@ -236,15 +307,40 @@ async function runSync(
         };
         if (result.hasMore) await scheduleContinuation(name);
       } catch (err) {
-        anyError = true;
-        entry.lastError =
-          err instanceof NotLoggedInError ? `${err.message} — open the site and log in` : err.message;
-        entry.running = false;
-        entry.progress = { ...entry.progress, phase: 'failed' };
-        console.warn(`[hstry-sync] ${name} failed:`, err);
+        if (err instanceof RateLimitedError) {
+          const cooldownMs = err.retryAfterMs ?? 20 * 60 * 1000;
+          entry.cooldownUntilMs = Date.now() + cooldownMs;
+          const timeStr = new Date(entry.cooldownUntilMs).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+          entry.lastError = `Rate limited by ${provider.name}. Cooling down until ${timeStr}`;
+          entry.running = false;
+          entry.progress = { ...entry.progress, phase: 'rate_limited' };
+          console.warn(
+            `[hstry-sync] ${name} hit rate limit, cooling down for ${Math.round(cooldownMs / 60000)}m:`,
+            err.message
+          );
+        } else {
+          anyError = true;
+          entry.lastError =
+            err instanceof NotLoggedInError ? `${err.message} — open the site and log in` : err.message;
+          entry.running = false;
+          entry.progress = { ...entry.progress, phase: 'failed' };
+          console.warn(`[hstry-sync] ${name} failed:`, err);
+        }
       } finally {
         activeProviders.delete(name);
-        await setStatusEntry(name, entry);
+        try { await setStatusEntry(name, entry); } catch (error) {
+          anyError = true;
+          console.warn(`[hstry-sync] failed to save final ${name} status:`, error);
+        }
+      }
+      } catch (error) {
+        activeProviders.delete(name);
+        anyError = true;
+        console.warn(`[hstry-sync] ${name} status setup failed:`, error);
+        try { await setStatusEntry(name, { ...(status[name] ?? {}), running: false, lastError: error.message, progress: { ...(status[name]?.progress ?? {}), phase: 'failed' } }); } catch {}
       }
     })
   );
@@ -257,30 +353,29 @@ async function runSync(
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  ensureAlarm();
-  registerEnabledSources();
+  Promise.all([ensureAlarm(), registerEnabledSources(), restoreContinuations()]).catch(error => console.warn('[hstry-sync] startup setup failed:', error));
 });
 chrome.runtime.onStartup.addListener(() => {
-  ensureAlarm();
-  registerEnabledSources();
+  Promise.all([ensureAlarm(), registerEnabledSources(), restoreContinuations()]).catch(error => console.warn('[hstry-sync] startup setup failed:', error));
 });
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM_NAME) {
-    runSync('alarm');
-    return;
+    return runSync('alarm').catch(error => console.warn('[hstry-sync] alarm sync failed:', error));
   }
   if (alarm.name.startsWith(CONTINUE_ALARM_PREFIX)) {
     const providerName = alarm.name.slice(CONTINUE_ALARM_PREFIX.length);
     if (Object.hasOwn(PROVIDERS, providerName)) {
       runSync('continuation', { onlyProvider: providerName }).then(started => {
         if (!started) scheduleContinuation(providerName);
-      });
+      }).catch(error => console.warn(`[hstry-sync] ${providerName} continuation failed:`, error));
     }
   }
 });
 
-chrome.action.onClicked.addListener(() => runSync('manual'));
+chrome.action.onClicked.addListener(() => {
+  runSync('manual').catch(error => console.warn('[hstry-sync] manual sync failed:', error));
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // Acknowledge synchronously and let the work continue in the background. A
@@ -289,7 +384,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // chrome.storage instead. Returning true here would reproduce the
   // "message channel closed before a response was received" error.
   if (message?.type === 'syncNow') {
-    runSync('manual');
+    runSync('manual').catch(error => console.warn('[hstry-sync] manual sync failed:', error));
     sendResponse({ ok: true });
     return false;
   }
