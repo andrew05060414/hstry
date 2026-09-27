@@ -109,6 +109,17 @@ pub struct AdapterInfo {
     pub default_paths: Vec<String>,
 }
 
+/// Upper bound for `info` and `detect`, which should answer in about a second.
+pub const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn probe_label(request: &AdapterRequest) -> Option<&'static str> {
+    match request {
+        AdapterRequest::Info => Some("info"),
+        AdapterRequest::Detect { .. } => Some("detect"),
+        _ => None,
+    }
+}
+
 /// Request sent to adapter.
 #[derive(Debug, Serialize)]
 #[serde(tag = "method", content = "params")]
@@ -237,6 +248,7 @@ pub enum AdapterResponse {
 pub struct AdapterRunner {
     runtime: Runtime,
     adapter_paths: Vec<PathBuf>,
+    probe_timeout: std::time::Duration,
 }
 
 impl AdapterRunner {
@@ -245,7 +257,15 @@ impl AdapterRunner {
         Self {
             runtime,
             adapter_paths,
+            probe_timeout: PROBE_TIMEOUT,
         }
+    }
+
+    /// Override the info/detect timeout (default [`PROBE_TIMEOUT`]).
+    #[must_use]
+    pub fn with_probe_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.probe_timeout = timeout;
+        self
     }
 
     /// Find an adapter by name.
@@ -316,6 +336,8 @@ impl AdapterRunner {
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // A caller's timeout drops this future; never leave the adapter behind.
+        cmd.kill_on_drop(true);
 
         let mut child = cmd.spawn()?;
 
@@ -324,7 +346,20 @@ impl AdapterRunner {
             stdin.shutdown().await?;
         }
 
-        let output = child.wait_with_output().await?;
+        // Probes only look at a path. One that stalls (e.g. a macOS privacy
+        // prompt on ~/Downloads under launchd) must not hang the caller.
+        let output = match probe_label(&request) {
+            Some(label) => tokio::time::timeout(self.probe_timeout, child.wait_with_output())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Adapter {} {label} timed out after {}s",
+                        adapter_path.display(),
+                        self.probe_timeout.as_secs_f32()
+                    )
+                })??,
+            None => child.wait_with_output().await?,
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

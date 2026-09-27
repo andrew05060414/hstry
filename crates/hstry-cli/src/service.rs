@@ -1682,8 +1682,19 @@ impl ServiceState {
                 if !expanded.exists() {
                     continue;
                 }
-                self.detect_and_upsert(&adapter_name, &adapter_path, &expanded)
-                    .await?;
+                // One stalled or broken probe must not abort the cycle (and
+                // with it the hub push that follows).
+                if let Err(err) = self
+                    .detect_and_upsert(&adapter_name, &adapter_path, &expanded)
+                    .await
+                {
+                    tracing::warn!(
+                        adapter = %adapter_name,
+                        path = %expanded.display(),
+                        error = %err,
+                        "default path discovery failed"
+                    );
+                }
             }
         }
         Ok(())
