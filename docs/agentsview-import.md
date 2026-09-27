@@ -11,7 +11,7 @@
 | 路径 | 结论 | 原因 |
 | --- | --- | --- |
 | 守护进程 `POST /api/v1/import/chatgpt`（zip）/ `claude-ai` | 采用 | 官方导入器；不需要停守护进程（CLI `agentsview import` 在守护进程运行时拒绝写库） |
-| 专用目录 + `[agents.<agent>] dirs` + `POST /api/v1/sessions/sync` | 采用（Gemini、Grok） | 走 AgentsView 原生 Gemini / Grok 解析器；文件长期保留，守护进程的文件监视也能看到 |
+| 专用目录 + `[agents.<agent>] dirs` + 一次 `POST /api/v1/sync?wait=true` | 采用（Gemini、Grok） | 走 AgentsView 原生 Gemini / Grok 解析器；文件长期保留；写完全部文件后同步一次，再按会话 ID 逐个确认（逐个调 `sessions/sync` 在繁忙的守护进程上每个要几秒到几分钟） |
 | `POST /api/v1/sessions/upload` | 不采用 | 实测只解析 Claude Code JSONL：Gemini 文件会变成 0 条消息、agent 为 `claude` 的空会话 |
 | `gemini-apps` Takeout 导入 | 不采用 | 每条 Prompted 活动一个单轮会话，丢失多轮结构和回答 |
 | 给 AgentsView 上游提通用导入格式 | 暂缓 | 需 Andrew 先确认 |
@@ -52,6 +52,7 @@ pwsh -File scripts/agentsview-sync.ps1 -Watch -IntervalSeconds 900
 
 - 增量：状态文件（默认 `%APPDATA%\hstry\agentsview-sync.json`）按“服务 + external_id”记录消息数和更新时间，只处理变化项；批次成功后才推进状态，带错误的批次下一轮重试。`-Full` 全量重发（AgentsView 侧幂等）。
 - 备份：第一次真实写入前用 SQLite 在线备份 API（需要 `python`）把 `sessions.db` 完整复制到 `-BackupRoot`，附 SHA-256 manifest；之后的增量不再备份，需要时加 `-Backup`。
+- 守护进程在做全量 `pg push` 等工作时，导入请求会排队；单个请求超时由 `-RequestTimeoutSec` 控制（默认 1800 秒）。
 - `-ChronicleConfig` 可指定另一份 Chronicle 配置（例如让 `adapter_paths` 指向本仓库的 `adapters/`）。
 
 ## 已知限制
