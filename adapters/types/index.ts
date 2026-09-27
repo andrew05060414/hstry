@@ -101,8 +101,11 @@ export type ExportFormat =
   | 'codex'
   | 'claude-code'
   | 'claude-web'
+  | 'claude-ai'
   | 'chatgpt'
   | 'gemini'
+  | 'gemini-cli'
+  | 'grok'
   | 'aider'
   | 'hermes'
   | 'pi';

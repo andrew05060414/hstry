@@ -87,7 +87,63 @@ const adapter: Adapter = {
     conversations.sort((a, b) => b.createdAt - a.createdAt);
     return conversations;
   },
+
+  async export(conversations, opts) {
+    if (opts.format !== 'gemini-cli') {
+      throw new Error(`Unsupported export format: ${opts.format}`);
+    }
+
+    const files = conversations.map((conversation, index) => {
+      const id = safeExportId(conversation.externalId ?? `conversation-${index + 1}`);
+      const sessionId = conversation.externalId ?? `chronicle-gemini-${index + 1}`;
+      const createdAt = new Date(conversation.createdAt).toISOString();
+      const updatedAt = new Date(conversation.updatedAt ?? conversation.createdAt).toISOString();
+      const records: Record<string, unknown>[] = [
+        {
+          kind: 'main',
+          sessionId,
+          startTime: createdAt,
+          lastUpdated: updatedAt,
+        },
+      ];
+
+      for (const message of conversation.messages) {
+        if (message.role === 'user') {
+          records.push({
+            id: `${sessionId}-user-${records.length}`,
+            timestamp: new Date(message.createdAt ?? conversation.createdAt).toISOString(),
+            type: 'user',
+            content: [{ text: message.content }],
+          });
+        } else if (message.role === 'assistant') {
+          records.push({
+            id: `${sessionId}-assistant-${records.length}`,
+            timestamp: new Date(message.createdAt ?? conversation.createdAt).toISOString(),
+            type: 'gemini',
+            content: message.content,
+            ...(message.model ? { model: message.model } : {}),
+          });
+        }
+      }
+
+      return {
+        path: `tmp/gemini-web/chats/session-${id}.jsonl`,
+        content: records.map(record => JSON.stringify(record)).join('\n') + '\n',
+        encoding: 'utf8' as const,
+      };
+    });
+
+    return {
+      format: 'gemini-cli',
+      files,
+      mimeType: 'application/x-ndjson',
+    };
+  },
 };
+
+function safeExportId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'conversation';
+}
 
 async function parseSessionFile(
   filePath: string,
