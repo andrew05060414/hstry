@@ -147,7 +147,7 @@ struct AdapterStatus {
 #[command(
     name = env!("CARGO_BIN_NAME"),
     author,
-    version,
+    version = env!("HSTRY_BUILD_VERSION"),
     about = "Chronicle connecting layer for hstry — universal AI chat history",
     propagate_version = true
 )]
@@ -262,7 +262,7 @@ enum Command {
         #[arg(long)]
         remote: Vec<String>,
 
-        /// Filter by message role (user, assistant, system, tool)
+        /// Filter by message role (user, assistant, system, tool, other)
         #[arg(long, short = 'r', value_enum)]
         role: Vec<SearchRoleArg>,
 
@@ -454,7 +454,7 @@ enum Command {
         #[arg(long)]
         workspace: Option<String>,
 
-        /// Filter by message role (user, assistant, system, tool)
+        /// Filter by message role (user, assistant, system, tool, other)
         #[arg(long, short = 'r', value_enum)]
         role: Vec<SearchRoleArg>,
 
@@ -2592,6 +2592,7 @@ async fn cmd_search_fast(
                 SearchRoleArg::Assistant => hit.role == MessageRole::Assistant,
                 SearchRoleArg::System => hit.role == MessageRole::System,
                 SearchRoleArg::Tool => hit.role == MessageRole::Tool,
+                SearchRoleArg::Other => hit.role == MessageRole::Other,
             })
         });
     }
@@ -2868,6 +2869,7 @@ enum SearchRoleArg {
     Assistant,
     System,
     Tool,
+    Other,
 }
 
 impl std::fmt::Display for SearchRoleArg {
@@ -2877,6 +2879,7 @@ impl std::fmt::Display for SearchRoleArg {
             SearchRoleArg::Assistant => write!(f, "assistant"),
             SearchRoleArg::System => write!(f, "system"),
             SearchRoleArg::Tool => write!(f, "tool"),
+            SearchRoleArg::Other => write!(f, "other"),
         }
     }
 }
@@ -5305,6 +5308,7 @@ async fn cmd_export(
                     SearchRoleArg::Assistant => m.role == MessageRole::Assistant,
                     SearchRoleArg::System => m.role == MessageRole::System,
                     SearchRoleArg::Tool => m.role == MessageRole::Tool,
+                    SearchRoleArg::Other => m.role == MessageRole::Other,
                 })
             })
             .map(|m| ParsedMessage {

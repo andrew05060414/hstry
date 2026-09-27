@@ -49,6 +49,24 @@ cargo install --path crates/hstry-mcp
 
 `hstry-tui` also installs `chronicle-tui`. `chronicle tui` launches whichever TUI binary is on `PATH`.
 
+### Upgrading a machine that runs the service
+
+A running service keeps its binary open (on Windows the file is locked), so
+restarting alone never picks up a new build. Stop the service manager unit,
+install, then start it again:
+
+| Platform | Stop | Start |
+| --- | --- | --- |
+| Windows (WinSW) | `Stop-Service chronicle` | `Start-Service chronicle` |
+| Linux (systemd user unit) | `systemctl --user stop hstry` | `systemctl --user start hstry` |
+| macOS (launchd) | `launchctl bootout gui/$(id -u)/com.hstry.service` | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hstry.service.plist` |
+
+Run `cargo install --path crates/hstry-cli --locked` between the two, and make
+sure the unit's executable path is the installed binary rather than a stale
+copy. `chronicle --version` prints the commit it was built from, for example
+`chronicle 1.0.0 (ff4d449a8 2026-09-25)`, so compare it across machines after
+upgrading. Remote search runs the peer's own `hstry`, so upgrade the hub too.
+
 ### Build from Source
 
 ```bash
