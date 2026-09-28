@@ -47,6 +47,15 @@ check('queued provider explains continuation', providerState({
   label: 'Continuing',
   detail: '219 detected · 10 processed · next batch queued',
 });
+const cooldownUntilMs = Date.now() + 60_000;
+check('cooldown is visible to the provider', providerState({ cooldownUntilMs }, true), {
+  tone: 'muted',
+  label: 'Rate limited',
+  detail: `Paused to avoid rate limits until ${new Date(cooldownUntilMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+});
+check('deferred provider explains active tab protection', providerState({ lastNotice: 'Deferred while chatgpt.com is active in browser' }, true), {
+  tone: 'idle', label: 'Deferred', detail: 'Deferred while chatgpt.com is active in browser',
+});
 check('progress detail omits empty counters', progressDetail({ detected: 4, processed: 1 }), '4 detected · 1 processed');
 check('visible settings normalize before sync', normalizeSettings({
   port: '3434',

@@ -5,7 +5,7 @@
   "version": "0.4.0",
   "description": "Background-captures web conversations from ChatGPT, Claude, Gemini, Perplexity, and Grok into the local Chronicle (hstry) archive.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6iUahzwRcPV901toJUSjZ6bdwWwIrjhUnV5LYzZ8t/n4wpcXa0V8f5CX69EBvoFtwmk8JBL34mJutQurUkdxGDnXJjYiY9wZiMLMIPKqOEjWB6YTfawox0U6j8cGDyiyswksbv/U54tZCCYlu1aZFbgGlyKoi1xQGm1NCc1dPE0qLQ+/P1aS/9SD6NbyP31SYnYoYYwIwEVovSBPfgRi1eDn2HfY2tuZxLf5U6fy5PPAF4RBVMLiiu2n3KKnwnu/17LGFgHXIrbc2cmS9P+0K9ijvxgTM0zukCtBU6u8qVSkERGjbg+vaCGXEd0IkpVqcwPisjgzM/r1xLpPZtJjcwIDAQAB",
-  "permissions": ["alarms", "storage"],
+  "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",

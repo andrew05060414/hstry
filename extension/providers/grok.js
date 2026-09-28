@@ -3,6 +3,7 @@
 
 import {
   NotLoggedInError,
+  RateLimitedError,
   createFailureTracker,
   fetchJson,
   sleep,
@@ -285,7 +286,7 @@ async function fetchConversationResponses(conversationId) {
       );
     }
   } catch (err) {
-    if (err instanceof NotLoggedInError) throw err;
+    if (err instanceof NotLoggedInError || err instanceof RateLimitedError) throw err;
     primaryError = err;
   }
 
@@ -310,7 +311,7 @@ async function fetchConversationResponses(conversationId) {
         );
       }
     } catch (err) {
-      if (err instanceof NotLoggedInError) throw err;
+      if (err instanceof NotLoggedInError || err instanceof RateLimitedError) throw err;
       throw new Error(
         `Failed to fetch responses for ${conversationId}: primary (${primaryError.message}), fallback (${err.message})`
       );
@@ -515,9 +516,14 @@ export async function syncGrok({
 
     try {
       const conv = await readConversation(summary);
-      if (conv) batch.push(conv);
+      if (!conv) throw new Error('Grok returned no parseable conversation messages');
+      batch.push(conv);
       failures.recordSuccess(summary.conversationId);
     } catch (err) {
+      if (err instanceof RateLimitedError) {
+        if (batch.length > 0) total += await push('grok-web', 'grok', batch);
+        throw err;
+      }
       const skipped = failures.recordFailure(summary.conversationId, summary.updatedAt, err);
       log(`grok: ${skipped ? 'skip-listing' : 'skipping'} conversation ${summary.conversationId}: ${err.message}`);
     }

@@ -5,10 +5,12 @@
 import {
   HttpError,
   NotLoggedInError,
+  RateLimitedError,
   createFailureTracker,
   fetchJson,
   shortId,
   sleep,
+  sleepWithJitter,
   textPart,
   thinkingPart,
   toMs,
@@ -20,9 +22,9 @@ const PROJECT_PAGE_SIZE = 50;
 // Refetch a little history on every run so near-simultaneous edits are not
 // missed between polls.
 const OVERLAP_MS = 5 * 60 * 1000;
-// Pace detail requests to stay under ChatGPT's rate limit. Backoff in
-// fetchJson handles bursts, but pacing avoids tripping 429 in the first place.
-const THROTTLE_MS = 400;
+// Pace detail requests to stay well under ChatGPT's rate limit. Pacing avoids
+// tripping 429 in the first place and prevents disturbing foreground web sessions.
+const THROTTLE_MS = 1500;
 
 async function getAccessToken() {
   const data = await fetchJson(`${BASE}/api/auth/session`);
@@ -56,7 +58,8 @@ async function listAccounts(token) {
       });
     }
     if (accounts.length > 0) return accounts;
-  } catch {
+  } catch (err) {
+    if (err instanceof RateLimitedError) throw err;
     // Endpoint shape changed or unavailable: sync the default account only.
   }
   return [{ id: null, name: 'default', isWorkspace: false }];
@@ -157,6 +160,7 @@ async function* listAllUpdatedConversations(token, accountId, sinceMs, { log, on
   try {
     projects = await listProjects(token, accountId);
   } catch (err) {
+    if (err instanceof RateLimitedError) throw err;
     if (!isUnsupportedList(err)) onListError(err);
     log(`chatgpt: cannot list projects: ${err.message}`);
   }
@@ -173,6 +177,7 @@ async function* listAllUpdatedConversations(token, accountId, sinceMs, { log, on
         if (fresh(item)) yield item;
       }
     } catch (err) {
+      if (err instanceof RateLimitedError) throw err;
       if (!isUnsupportedList(err)) onListError(err);
       log(`chatgpt: cannot list ${label}: ${err.message}`);
     }
@@ -272,27 +277,22 @@ const NON_TEXT_METADATA_KEYS = new Set([
 ]);
 
 function recoverStrings(value, output) {
-  if (typeof value === 'string') {
-    const text = value.trim();
-    if (text) output.push(text);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) recoverStrings(item, output);
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-
-  for (const [childKey, childValue] of Object.entries(value)) {
-    if (
-      NON_TEXT_METADATA_KEYS.has(childKey) ||
-      childKey === 'asset_pointer' ||
-      childKey.endsWith('_id') ||
-      childKey.endsWith('_slug')
-    ) {
-      continue;
+  const stack = [value];
+  while (stack.length) {
+    const current = stack.pop();
+    if (typeof current === 'string') {
+      const text = current.trim();
+      if (text) output.push(text);
+    } else if (Array.isArray(current)) {
+      for (let index = current.length - 1; index >= 0; index--) stack.push(current[index]);
+    } else if (current && typeof current === 'object') {
+      const entries = Object.entries(current);
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const [childKey, childValue] = entries[index];
+        if (NON_TEXT_METADATA_KEYS.has(childKey) || childKey === 'asset_pointer' || childKey.endsWith('_id') || childKey.endsWith('_slug')) continue;
+        stack.push(childValue);
+      }
     }
-    recoverStrings(childValue, output);
   }
 }
 
@@ -416,16 +416,21 @@ export async function syncChatGPT({ state, push, register = async () => {}, log,
       if (failures.shouldSkip(item.id, updatedMs)) continue;
       detected++;
       await report({ phase: 'importing', detected, processed });
-      if (!first) await sleep(THROTTLE_MS);
+      if (!first) await sleepWithJitter(THROTTLE_MS, 400);
       first = false;
       try {
         const detail = await fetchJson(`${BASE}/backend-api/conversation/${item.id}`, {
           headers: authHeaders(token, account.id),
         });
         const conv = toParsedConversation(detail, item.id, account.id, item);
-        if (conv) batch.push(conv);
+        if (!conv) throw new Error('ChatGPT returned no parseable conversation messages');
+        batch.push(conv);
         failures.recordSuccess(item.id);
       } catch (err) {
+        if (err instanceof RateLimitedError) {
+          if (batch.length > 0) total += await push(sourceId, 'chatgpt-web', batch);
+          throw err;
+        }
         const skipped = failures.recordFailure(item.id, updatedMs, err);
         log(`chatgpt: ${skipped ? 'skip-listing' : 'skipping'} conversation ${item.id}: ${err.message}`);
       }
@@ -460,3 +465,5 @@ export async function syncChatGPT({ state, push, register = async () => {}, log,
 
   return { state: newState, conversations: total };
 }
+
+export const chatgptInternals = { toParsedConversation, recoverStrings };

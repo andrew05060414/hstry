@@ -1,14 +1,16 @@
 // Perplexity web sync via the authenticated thread endpoints used by its UI.
 
-import { createFailureTracker, fetchJson, sleep, textPart, toMs } from '../lib/common.js';
+import { RateLimitedError, createFailureTracker, fetchJson, sleepWithJitter, textPart, toMs } from '../lib/common.js';
 
 const BASE = 'https://www.perplexity.ai';
 const LIST_URL = `${BASE}/rest/thread/list_ask_threads?version=2.18&source=default`;
 const PAGE_SIZE = 20;
 const OVERLAP_MS = 5 * 60 * 1000;
 const ENTRY_PAGE_SIZE = 100;
-// Pace requests; fetchJson handles 429 bursts, pacing avoids them.
-const THROTTLE_MS = 500;
+const MAX_PAGES = 101;
+// Pace requests well under the rate limit; a 429 aborts the run so the
+// background circuit breaker can cool the provider down.
+const THROTTLE_MS = 1500;
 
 const headers = {
   accept: '*/*',
@@ -19,14 +21,19 @@ const headers = {
 
 async function listThreads(sinceMs) {
   const threads = [];
-  for (let offset = 0; offset <= 10_000; offset += PAGE_SIZE) {
-    if (offset > 0) await sleep(THROTTLE_MS);
+  const seenPages = new Set();
+  for (let page = 0, offset = 0; page < MAX_PAGES; page++, offset += PAGE_SIZE) {
+    if (offset > 0) await sleepWithJitter(THROTTLE_MS, 400);
     const data = await fetchJson(LIST_URL, {
       method: 'POST',
       headers,
       body: JSON.stringify({ limit: PAGE_SIZE, ascending: false, offset, search_term: '' }),
     });
-    const items = Array.isArray(data) ? data : [];
+    const items = Array.isArray(data) ? data : data?.threads;
+    if (!Array.isArray(items)) throw new Error('Perplexity returned malformed thread list');
+    const signature = JSON.stringify(items.map(item => item?.slug ?? item?.uuid ?? item?.context_uuid));
+    if (seenPages.has(signature)) throw new Error('Perplexity thread list repeated a page');
+    seenPages.add(signature);
     let reachedOld = false;
     for (const item of items) {
       const updatedAt = toMs(item.last_query_datetime);
@@ -36,7 +43,8 @@ async function listThreads(sinceMs) {
       }
       threads.push({ ...item, updatedAt });
     }
-    if (reachedOld || items.length < PAGE_SIZE) break;
+    if (reachedOld || items.length < PAGE_SIZE) return threads;
+    if (page === MAX_PAGES - 1) throw new Error('Perplexity thread list exceeded its safety page limit');
   }
   return threads;
 }
@@ -53,16 +61,24 @@ function answerText(entry) {
  * page means there may be more. */
 async function readThreadEntries(slug) {
   const entries = [];
-  for (let offset = 0; offset <= 10_000; offset += ENTRY_PAGE_SIZE) {
-    if (offset > 0) await sleep(THROTTLE_MS);
+  const seenPages = new Set();
+  for (let page = 0, offset = 0; page < MAX_PAGES; page++, offset += ENTRY_PAGE_SIZE) {
+    if (offset > 0) await sleepWithJitter(THROTTLE_MS, 400);
     const url = `${BASE}/rest/thread/${encodeURIComponent(slug)}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${ENTRY_PAGE_SIZE}&offset=${offset}&from_first=true`;
     const data = await fetchJson(url, { headers });
-    const page = Array.isArray(data?.entries) ? data.entries : [];
-    entries.push(...page);
-    const hasNext = typeof data?.has_next_page === 'boolean' ? data.has_next_page : page.length >= ENTRY_PAGE_SIZE;
-    if (!hasNext || page.length === 0) break;
+    if (!Array.isArray(data?.entries)) throw new Error(`Perplexity returned malformed detail for ${slug}`);
+    const pageEntries = data.entries;
+    const signature = JSON.stringify(
+      pageEntries.map(entry => entry?.uuid ?? entry?.id ?? [entry?.query_str, entry?.updated_datetime])
+    );
+    if (pageEntries.length && seenPages.has(signature)) throw new Error(`Perplexity repeated detail page for ${slug}`);
+    seenPages.add(signature);
+    entries.push(...pageEntries);
+    const hasNext =
+      typeof data.has_next_page === 'boolean' ? data.has_next_page : pageEntries.length >= ENTRY_PAGE_SIZE;
+    if (!hasNext || pageEntries.length === 0) return entries;
   }
-  return entries;
+  throw new Error(`Perplexity detail exceeded its safety page limit for ${slug}`);
 }
 
 async function readThread(summary) {
@@ -78,7 +94,7 @@ async function readThread(summary) {
       messages.push({ role: 'assistant', content: answer, createdAt, model: entry.display_model ?? null, parts: [textPart(answer)] });
     }
   }
-  if (!messages.length) return null;
+  if (!messages.length) throw new Error(`Perplexity returned no parseable messages for ${summary.slug}`);
   const externalId = String(summary.context_uuid ?? summary.uuid ?? summary.slug);
   return {
     externalId,
@@ -108,13 +124,16 @@ export async function syncPerplexity({ state, push, register = async () => {}, l
   for (const summary of summaries) {
     processed++;
     if (failures.shouldSkip(summary.slug, summary.updatedAt)) continue;
-    if (!first) await sleep(THROTTLE_MS);
+    if (!first) await sleepWithJitter(THROTTLE_MS, 400);
     first = false;
     try {
-      const conversation = await readThread(summary);
-      if (conversation) batch.push(conversation);
+      batch.push(await readThread(summary));
       failures.recordSuccess(summary.slug);
     } catch (error) {
+      if (error instanceof RateLimitedError) {
+        if (batch.length) total += await push('perplexity-web', 'perplexity', batch);
+        throw error;
+      }
       const skipped = failures.recordFailure(summary.slug, summary.updatedAt, error);
       log(`perplexity: ${skipped ? 'skip-listing' : 'skipping'} thread ${summary.slug}: ${error.message}`);
     }
@@ -135,4 +154,4 @@ export async function syncPerplexity({ state, push, register = async () => {}, l
   };
 }
 
-export const perplexityInternals = { answerText };
+export const perplexityInternals = { answerText, listThreads, readThread };

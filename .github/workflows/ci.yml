@@ -93,5 +93,7 @@ jobs:
           bun run extension/test/new-providers.js
           bun run extension/test/options-init.js
           bun run extension/test/provider-parallel.js
+          bun run extension/test/provider-reliability.js
+          bun run extension/test/rate-limit-circuit-breaker.js
           bun run extension/test/site-access.js
           bun run extension/test/ui.js

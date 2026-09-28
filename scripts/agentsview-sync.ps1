@@ -245,15 +245,93 @@ function Invoke-AgentsViewSync {
 function Get-AgentsViewSession {
     param([string]$Id)
 
+    $request = @{
+        Uri = "$AgentsViewUrl/api/v1/sessions/$([uri]::EscapeDataString($Id))"
+        Headers = Get-AgentsViewHeaders
+        TimeoutSec = 60
+        SkipHttpErrorCheck = $true
+    }
+    $response = Invoke-WebRequest @request
+    if ([int]$response.StatusCode -eq 404) { return $null }
+    if ([int]$response.StatusCode -lt 200 -or [int]$response.StatusCode -ge 300) {
+        throw "AgentsView session check failed with HTTP $([int]$response.StatusCode)"
+    }
+    return $response.Content | ConvertFrom-Json
+}
+
+function Get-ExpectedMessages {
+    param([string]$Id, [string]$OutputPath)
+
+    $null = Invoke-Chronicle @('--json', 'export', '--format', 'json', '--conversations', $Id, '--output', $OutputPath)
+    $payload = Get-Content -LiteralPath $OutputPath -Raw | ConvertFrom-Json
+    $conversations = @($payload | Where-Object { $_.externalId -or $_.external_id })
+    if ($conversations.Count -ne 1) { throw "Chronicle JSON export for '$Id' did not contain exactly one conversation" }
+    return @($conversations[0].messages)
+}
+
+function Get-MessageText {
+    param($Content)
+
+    if ($null -eq $Content) { return '' }
+    if ($Content -is [string]) { return $Content }
+    if ($Content -is [System.Array]) {
+        return (($Content | ForEach-Object { Get-MessageText $_ }) -join '')
+    }
+    if ($Content -is [System.Collections.IDictionary]) {
+        if ($Content.text) { return [string]$Content.text }
+        if ($Content.content) { return Get-MessageText $Content.content }
+    }
+    if ($Content.PSObject.Properties['text']) { return [string]$Content.text }
+    if ($Content.PSObject.Properties['content']) { return Get-MessageText $Content.content }
+    return ''
+}
+
+function Test-AgentsViewMessages {
+    param([string]$Id, [object[]]$Expected, [switch]$AllowPrefix)
+
     try {
-        $request = @{
-            Uri = "$AgentsViewUrl/api/v1/sessions/$([uri]::EscapeDataString($Id))"
-            Headers = Get-AgentsViewHeaders
-            TimeoutSec = 60
+        $escaped = [uri]::EscapeDataString($Id)
+        $before = Get-AgentsViewSession $Id
+        if (-not $before) { return $false }
+        $actual = @()
+        $pageSize = 1000
+        $from = 0
+        $lastOrdinal = -1
+        while ($actual.Count -lt 100000) {
+            $uri = "$AgentsViewUrl/api/v1/sessions/$escaped/messages?limit=$pageSize&direction=asc&from=$from"
+            $response = Invoke-RestMethod -Uri $uri -Headers (Get-AgentsViewHeaders) -TimeoutSec 60
+            $page = @($response.messages)
+            if ([int]$response.count -ne $page.Count) { return $false }
+            if ($page.Count -eq 0) { break }
+            if ([int]$page[0].ordinal -lt $from -or [int]$page[0].ordinal -le $lastOrdinal) { return $false }
+            $actual += $page
+            if ($actual.Count -gt $Expected.Count) { return $false }
+            $lastOrdinal = [int]$page[-1].ordinal
+            if ($page.Count -lt $pageSize) { break }
+            if ($null -eq $response.last_ordinal -or [int]$response.last_ordinal -ne $lastOrdinal -or $lastOrdinal -lt $from) { return $false }
+            $from = $lastOrdinal + 1
         }
-        return Invoke-RestMethod @request
+        if ($actual.Count -ge 100000) { return $false }
+        if ([int]$before.message_count -ne $actual.Count) { return $false }
+        if ($AllowPrefix) {
+            if ($actual.Count -gt $Expected.Count) { return $false }
+        } elseif ($actual.Count -ne $Expected.Count) { return $false }
+        for ($i = 0; $i -lt $actual.Count; $i++) {
+            $expectedRole = [string]$Expected[$i].role
+            $actualRole = [string]$actual[$i].role
+            if ($expectedRole -eq 'user' -and $actualRole -notin @('user', 'human')) { return $false }
+            if ($expectedRole -ne 'user' -and $expectedRole -ne $actualRole) { return $false }
+            $expectedText = [string]$Expected[$i].content
+            $actualText = [string]$actual[$i].content
+            if (-not $actualText -and $actual[$i].PSObject.Properties['parts']) {
+                $actualText = Get-MessageText $actual[$i].parts
+            }
+            if ($expectedText -cne $actualText) { return $false }
+        }
+        $after = Get-AgentsViewSession $Id
+        return $after -and [int]$before.message_count -eq [int]$after.message_count -and [string]$before.transcript_revision -and [string]$before.transcript_revision -ceq [string]$after.transcript_revision
     } catch {
-        return $null
+        return $false
     }
 }
 
@@ -272,6 +350,27 @@ function Sync-Provider {
     $changed = @($unique | Where-Object {
         $Full -or $State.conversations[(Get-StateKey $ProviderName $_)] -ne (Get-Fingerprint $_)
     })
+    $reconciledStale = @()
+    if ($ProviderName -eq 'chatgpt' -and -not $Full -and -not $DryRun) {
+        foreach ($row in $unique) {
+            $key = Get-StateKey $ProviderName $row
+            if ($State.conversations[$key] -ne (Get-Fingerprint $row)) { continue }
+            $checkPath = Join-Path ([System.IO.Path]::GetTempPath()) ("chronicle-agentsview-check-" + [guid]::NewGuid().ToString('N') + '.json')
+            try {
+                $expected = @(Get-ExpectedMessages ([string]$row.id) $checkPath)
+                $sessionId = "chatgpt:$($row.external_id)"
+                if (-not (Test-AgentsViewMessages $sessionId $expected)) {
+                    $State.conversations.Remove($key)
+                    $reconciledStale += $row
+                }
+            } finally {
+                if ((Test-Path -LiteralPath $checkPath) -and (Split-Path -Parent $checkPath) -eq [System.IO.Path]::GetTempPath().TrimEnd('\')) {
+                    Remove-Item -LiteralPath $checkPath -Force
+                }
+            }
+        }
+        $changed = @($changed + $reconciledStale)
+    }
     $summary = [ordered]@{
         provider = $ProviderName
         sources = $found.sources
@@ -293,6 +392,7 @@ function Sync-Provider {
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("chronicle-agentsview-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $temp | Out-Null
     $pendingNative = @()
+    $expectedById = @{}
     try {
         for ($offset = 0; $offset -lt $changed.Count; $offset += $BatchSize) {
             $batch = @($changed[$offset..([Math]::Min($offset + $BatchSize, $changed.Count) - 1)])
@@ -301,6 +401,9 @@ function Sync-Provider {
             New-Item -ItemType Directory -Force -Path $batchDir | Out-Null
 
             if ($definition.mode -eq 'import') {
+                foreach ($row in $batch) {
+                    $expectedById[[string]$row.id] = @(Get-ExpectedMessages ([string]$row.id) (Join-Path $batchDir ("expected-$($row.id).json")))
+                }
                 $json = Join-Path $batchDir 'conversations.json'
                 Export-Batch $definition.format $ids $json
                 $upload = $json
@@ -312,6 +415,18 @@ function Sync-Provider {
                 foreach ($name in 'imported', 'updated', 'skipped', 'errors') { $summary[$name] += [int64]$stats.$name }
                 $batchErrors = [int64]$stats.errors
             } else {
+                $batchSafe = $true
+                foreach ($row in $batch) {
+                    $expected = @(Get-ExpectedMessages ([string]$row.id) (Join-Path $batchDir ("expected-$($row.id).json")))
+                    $expectedById[[string]$row.id] = $expected
+                    $sessionId = if ($row.external_id) { "$($definition.agent):$($row.external_id)" }
+                    $existing = if ($sessionId) { Get-AgentsViewSession $sessionId }
+                    if ($existing -and -not (Test-AgentsViewMessages $sessionId $expected -AllowPrefix)) {
+                        $summary.errors++
+                        $batchSafe = $false
+                    }
+                }
+                if (-not $batchSafe) { continue }
                 $exportDir = Join-Path $batchDir 'export'
                 Export-Batch $definition.format $ids $exportDir
                 $agentRoot = Join-Path $SessionRoot $definition.agent
@@ -325,11 +440,19 @@ function Sync-Provider {
                 continue
             }
 
-            # A batch with errors stays pending so the next run retries it;
-            # AgentsView imports are idempotent.
-            if ($batchErrors -gt 0) { continue }
             foreach ($row in $batch) {
-                $State.conversations[(Get-StateKey $ProviderName $row)] = Get-Fingerprint $row
+                $sessionId = if ($definition.mode -eq 'import') { "$($definition.agent):$($row.external_id)" } else { '' }
+                if ($definition.mode -eq 'import') {
+                    $sessionId = if ($ProviderName -eq 'chatgpt') { "chatgpt:$($row.external_id)" } else { "claude-ai:$($row.external_id)" }
+                }
+                $expected = $expectedById[[string]$row.id]
+                if ($batchErrors -eq 0 -and $expected -and (Test-AgentsViewMessages $sessionId $expected)) {
+                    $State.conversations[(Get-StateKey $ProviderName $row)] = Get-Fingerprint $row
+                } else {
+                    # Existing ChatGPT sessions are skipped by older AgentsView
+                    # versions. Leave stale content pending for a later retry.
+                    $summary.errors++
+                }
             }
             Write-SyncState $State
         }
@@ -337,8 +460,9 @@ function Sync-Provider {
         if ($pendingNative.Count -gt 0) {
             Invoke-AgentsViewSync
             foreach ($row in $pendingNative) {
-                $session = if ($row.external_id) { Get-AgentsViewSession "$($definition.agent):$($row.external_id)" }
-                if ($session -and [int64]$session.message_count -gt 0) {
+                $sessionId = if ($row.external_id) { "$($definition.agent):$($row.external_id)" }
+                $expected = $expectedById[[string]$row.id]
+                if ($sessionId -and (Test-AgentsViewMessages $sessionId $expected)) {
                     $summary.imported++
                     $State.conversations[(Get-StateKey $ProviderName $row)] = Get-Fingerprint $row
                 } else {
@@ -349,7 +473,11 @@ function Sync-Provider {
             Write-SyncState $State
         }
     } finally {
-        Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+        $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+        $tempFull = [System.IO.Path]::GetFullPath($temp)
+        if ($tempFull.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $tempFull) -like 'chronicle-agentsview-*') {
+            Remove-Item -LiteralPath $tempFull -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     return [pscustomobject]$summary

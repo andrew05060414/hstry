@@ -2,10 +2,12 @@
 // authenticated with the browser session cookies (no bearer token needed).
 
 import {
+  RateLimitedError,
   createFailureTracker,
   fetchJson,
   shortId,
   sleep,
+  sleepWithJitter,
   textPart,
   thinkingPart,
   toolCallPart,
@@ -16,7 +18,7 @@ import {
 const BASE = 'https://claude.ai';
 const PAGE_SIZE = 50;
 const OVERLAP_MS = 5 * 60 * 1000;
-const THROTTLE_MS = 400;
+const THROTTLE_MS = 1500;
 // parent_message_uuid of a conversation's first message.
 const ROOT_PARENT = /^0{8}-0{4}-4000-8000-0{12}$/;
 
@@ -167,16 +169,21 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
         if (failures.shouldSkip(item.uuid, updatedMs)) continue;
         detected++;
         await report({ phase: 'importing', detected, processed });
-        if (!first) await sleep(THROTTLE_MS);
+        if (!first) await sleepWithJitter(THROTTLE_MS, 400);
         first = false;
         try {
           const detail = await fetchJson(
             `${BASE}/api/organizations/${org.id}/chat_conversations/${item.uuid}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=eventual`
           );
           const conv = toParsedConversation(detail, org.id);
-          if (conv) batch.push(conv);
+          if (!conv) throw new Error('Claude returned no parseable conversation messages');
+          batch.push(conv);
           failures.recordSuccess(item.uuid);
         } catch (err) {
+          if (err instanceof RateLimitedError) {
+            if (batch.length > 0) total += await push(sourceId, 'claude-web', batch);
+            throw err;
+          }
           const skipped = failures.recordFailure(item.uuid, updatedMs, err);
           log(`claude: ${skipped ? 'skip-listing' : 'skipping'} conversation ${item.uuid}: ${err.message}`);
         }
@@ -188,6 +195,7 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
         }
       }
     } catch (err) {
+      if (err instanceof RateLimitedError) throw err;
       listFailures++;
       log(`claude: skipping organization ${key}: ${err.message}`);
     }

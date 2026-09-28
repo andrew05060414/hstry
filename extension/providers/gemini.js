@@ -2,9 +2,10 @@
 
 import {
   NotLoggedInError,
+  RateLimitedError,
   createFailureTracker,
   fetchWithBackoff,
-  sleep,
+  sleepWithJitter,
   textPart,
   toMs,
 } from '../lib/common.js';
@@ -14,8 +15,9 @@ const OVERLAP_MS = 5 * 60 * 1000;
 const PAGE_SIZE = 20;
 const SYNC_CHUNK_SIZE = 10;
 const REQUEST_TIMEOUT_MS = 20_000;
-// Pace chat reads; fetchWithBackoff handles 429 bursts, pacing avoids them.
-const THROTTLE_MS = 500;
+// Pace chat reads well under Gemini's rate limit; a 429 aborts the run so the
+// background circuit breaker can cool the provider down.
+const THROTTLE_MS = 1500;
 // Sanity window for [seconds, nanos] turn timestamps (2015..2096).
 const MIN_EPOCH_S = 1_420_070_400;
 const MAX_EPOCH_S = 4_000_000_000;
@@ -107,8 +109,10 @@ async function listChats(session, sinceMs) {
         updatedAt,
       });
     }
-    if (reachedOld || !nextCursor || nextCursor === cursor) break;
+    if (reachedOld || !nextCursor) break;
+    if (nextCursor === cursor) throw new Error('Gemini chat list repeated its pagination cursor');
     cursor = nextCursor;
+    if (page === 199) throw new Error('Gemini chat list exceeded the 200-page safety limit');
   }
   return [...chats.values()];
 }
@@ -154,8 +158,10 @@ async function readChat(session, summary) {
     const pageTurns = Array.isArray(data?.[0]) ? data[0] : [];
     turns.push(...pageTurns);
     const nextCursor = data?.[1] ?? null;
-    if (!nextCursor || nextCursor === cursor) break;
+    if (!nextCursor) break;
+    if (nextCursor === cursor) throw new Error(`Gemini conversation ${summary.id} repeated its pagination cursor`);
     cursor = nextCursor;
+    if (page === 199) throw new Error(`Gemini conversation ${summary.id} exceeded the 200-page safety limit`);
   }
   turns.reverse();
 
@@ -213,13 +219,18 @@ export async function syncGemini({ state, push, register = async () => {}, log, 
   for (const summary of summaries.slice(startIndex, endIndex)) {
     processed++;
     if (failures.shouldSkip(summary.id, summary.updatedAt)) continue;
-    if (!first) await sleep(THROTTLE_MS);
+    if (!first) await sleepWithJitter(THROTTLE_MS, 300);
     first = false;
     try {
       const conversation = await readChat(session, summary);
-      if (conversation) batch.push(conversation);
+      if (!conversation) throw new Error('Gemini returned no parseable conversation messages');
+      batch.push(conversation);
       failures.recordSuccess(summary.id);
     } catch (error) {
+      if (error instanceof RateLimitedError) {
+        if (batch.length) await push('gemini-web', 'gemini', batch);
+        throw error;
+      }
       const skipped = failures.recordFailure(summary.id, summary.updatedAt, error);
       log(`gemini: ${skipped ? 'skip-listing' : 'skipping'} conversation ${summary.id}: ${error.message}`);
     }
@@ -253,4 +264,4 @@ export async function syncGemini({ state, push, register = async () => {}, log, 
   };
 }
 
-export const geminiInternals = { extractSession, parseRpcResponse, turnTimestampMs, assistantReply };
+export const geminiInternals = { extractSession, parseRpcResponse, listChats, readChat, turnTimestampMs, assistantReply };
