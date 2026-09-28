@@ -97,11 +97,15 @@ globalThis.fetch = async url => {
   }
   throw new Error(`unexpected request ${url}`);
 };
-await assert.rejects(syncPerplexity({ ...quiet, state: {}, push: async () => { partialPushes++; } }), /repeated detail page/);
+// A broken thread is recorded on the failure tracker, not pushed, and holds the watermark.
+const repeated = await syncPerplexity({ ...quiet, state: { lastSyncMs: 456 }, push: async () => { partialPushes++; } });
 assert.deepEqual(offsets, [0, 100]);
 assert.equal(partialPushes, 0);
+assert.equal(repeated.state.lastSyncMs, 456);
+assert.match(repeated.state.failed.repeats.lastError, /repeated detail page/);
 
-// Gemini fails closed on repeated list/detail cursors and a 200-page cap.
+// Gemini fails closed on repeated list cursors and the 200-page cap; a broken
+// conversation is recorded on the failure tracker and holds the watermark.
 function rpcResponse(id, value) {
   return new Response(`)]}'\n${JSON.stringify([["wrb.fr", id, JSON.stringify(value), null]])}`);
 }
@@ -126,10 +130,15 @@ async function geminiWithPages(mode) {
     }
     throw new Error(`unexpected request ${url}`);
   };
-  await assert.rejects(
-    syncGemini({ ...quiet, state: { lastSyncMs: 789 }, push: async () => { pushes++; } }),
-    mode.endsWith('repeat') ? /repeated its pagination cursor/ : /200-page safety limit/
-  );
+  const expected = mode.endsWith('repeat') ? /repeated its pagination cursor/ : /200-page safety limit/;
+  const run = syncGemini({ ...quiet, state: { lastSyncMs: 789 }, push: async () => { pushes++; } });
+  if (mode.startsWith('list')) {
+    await assert.rejects(run, expected);
+  } else {
+    const result = await run;
+    assert.equal(result.state.lastSyncMs, 789);
+    assert.match(result.state.failed.one.lastError, expected);
+  }
   assert.equal(pushes, 0);
   if (mode === 'list-cap') assert.equal(listPage, 200);
   if (mode === 'detail-cap') assert.equal(detailPage, 200);

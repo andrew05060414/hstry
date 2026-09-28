@@ -3,6 +3,7 @@
 
 import {
   RateLimitedError,
+  createFailureTracker,
   fetchJson,
   shortId,
   sleep,
@@ -18,6 +19,8 @@ const BASE = 'https://claude.ai';
 const PAGE_SIZE = 50;
 const OVERLAP_MS = 5 * 60 * 1000;
 const THROTTLE_MS = 1500;
+// parent_message_uuid of a conversation's first message.
+const ROOT_PARENT = /^0{8}-0{4}-4000-8000-0{12}$/;
 
 async function listOrganizations() {
   const data = await fetchJson(`${BASE}/api/organizations`);
@@ -89,8 +92,35 @@ function extractMessage(msg) {
   };
 }
 
+/** With `tree=True` claude.ai returns every message, including edited and
+ * regenerated branches. Walk from the current leaf through
+ * `parent_message_uuid` to keep only the branch the user is looking at. Falls
+ * back to array order when the tree fields are missing or the chain breaks. */
+function activeBranch(detail) {
+  const all = Array.isArray(detail?.chat_messages) ? detail.chat_messages : [];
+  const byUuid = new Map(all.filter(msg => msg?.uuid).map(msg => [msg.uuid, msg]));
+  const leaf = detail?.current_leaf_message_uuid;
+  if (!leaf || !byUuid.has(leaf)) return { messages: all, offBranch: 0 };
+
+  const chain = [];
+  const visited = new Set();
+  for (let uuid = leaf; uuid && byUuid.has(uuid); uuid = byUuid.get(uuid).parent_message_uuid) {
+    if (visited.has(uuid)) return { messages: all, offBranch: 0 };
+    visited.add(uuid);
+    chain.push(byUuid.get(uuid));
+  }
+  // The walk must end at the root: a parent that is neither a known message
+  // nor the root sentinel means the tree is incomplete.
+  const rootParent = chain.at(-1)?.parent_message_uuid;
+  if (rootParent && !ROOT_PARENT.test(rootParent)) return { messages: all, offBranch: 0 };
+
+  chain.reverse();
+  return { messages: chain, offBranch: all.length - chain.length };
+}
+
 function toParsedConversation(detail, orgId) {
-  const messages = (detail?.chat_messages ?? []).map(extractMessage).filter(Boolean);
+  const branch = activeBranch(detail);
+  const messages = branch.messages.map(extractMessage).filter(Boolean);
   if (messages.length === 0) return null;
 
   return {
@@ -105,6 +135,9 @@ function toParsedConversation(detail, orgId) {
       url: `${BASE}/chat/${detail.uuid}`,
       orgId,
       ...(detail.summary ? { summary: detail.summary } : {}),
+      ...(branch.offBranch > 0
+        ? { currentLeafMessageUuid: detail.current_leaf_message_uuid, offBranchMessages: branch.offBranch }
+        : {}),
     },
   };
 }
@@ -125,12 +158,15 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
     const lastSyncMs = state?.orgs?.[key]?.lastSyncMs ?? null;
     const since = lastSyncMs ? lastSyncMs - OVERLAP_MS : null;
     const runStartedMs = Date.now();
-    let failures = 0;
+    const failures = createFailureTracker(state?.orgs?.[key]?.failed);
+    let listFailures = 0;
 
     let batch = [];
     let first = true;
     try {
       for await (const item of listUpdatedConversations(org.id, since)) {
+        const updatedMs = toMs(item.updated_at);
+        if (failures.shouldSkip(item.uuid, updatedMs)) continue;
         detected++;
         await report({ phase: 'importing', detected, processed });
         if (!first) await sleepWithJitter(THROTTLE_MS, 400);
@@ -140,17 +176,16 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
             `${BASE}/api/organizations/${org.id}/chat_conversations/${item.uuid}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=eventual`
           );
           const conv = toParsedConversation(detail, org.id);
-          if (conv) batch.push(conv);
-          else throw new Error('Claude returned no parseable conversation messages');
+          if (!conv) throw new Error('Claude returned no parseable conversation messages');
+          batch.push(conv);
+          failures.recordSuccess(item.uuid);
         } catch (err) {
           if (err instanceof RateLimitedError) {
-            if (batch.length > 0) {
-              total += await push(sourceId, 'claude-web', batch);
-            }
+            if (batch.length > 0) total += await push(sourceId, 'claude-web', batch);
             throw err;
           }
-          failures++;
-          log(`claude: skipping conversation ${item.uuid}: ${err.message}`);
+          const skipped = failures.recordFailure(item.uuid, updatedMs, err);
+          log(`claude: ${skipped ? 'skip-listing' : 'skipping'} conversation ${item.uuid}: ${err.message}`);
         }
         processed++;
         await report({ detected, processed });
@@ -161,20 +196,23 @@ export async function syncClaude({ state, push, register = async () => {}, log, 
       }
     } catch (err) {
       if (err instanceof RateLimitedError) throw err;
-      failures++;
+      listFailures++;
       log(`claude: skipping organization ${key}: ${err.message}`);
     }
     if (batch.length > 0) {
       total += await push(sourceId, 'claude-web', batch);
     }
 
-    // Keep the watermark unless the run was clean, so failures are retried.
-    if (failures > 0) {
-      log(`claude: ${failures} conversation(s) failed; keeping watermark to retry next run`);
+    // Keep the watermark while anything retryable failed; permanently failing
+    // conversations are skip-listed so they cannot pin it forever.
+    const holding = failures.blocking + listFailures;
+    if (holding > 0) {
+      log(`claude: ${holding} retryable failure(s); keeping watermark to retry next run`);
     }
     newState.orgs[key] = {
-      lastSyncMs: failures > 0 ? lastSyncMs : runStartedMs,
+      lastSyncMs: holding > 0 ? lastSyncMs : runStartedMs,
       name: org.name,
+      failed: failures.toState(),
     };
   }
 

@@ -1,12 +1,26 @@
 // Gemini web sync through the authenticated batchexecute RPCs used by the web UI.
 
-import { assertNotCloudflareChallenge, extractRetryAfter, NotLoggedInError, RateLimitedError, sleepWithJitter, textPart, toMs } from '../lib/common.js';
+import {
+  NotLoggedInError,
+  RateLimitedError,
+  createFailureTracker,
+  fetchWithBackoff,
+  sleepWithJitter,
+  textPart,
+  toMs,
+} from '../lib/common.js';
 
 const BASE = 'https://gemini.google.com';
 const OVERLAP_MS = 5 * 60 * 1000;
 const PAGE_SIZE = 20;
 const SYNC_CHUNK_SIZE = 10;
 const REQUEST_TIMEOUT_MS = 20_000;
+// Pace chat reads well under Gemini's rate limit; a 429 aborts the run so the
+// background circuit breaker can cool the provider down.
+const THROTTLE_MS = 1500;
+// Sanity window for [seconds, nanos] turn timestamps (2015..2096).
+const MIN_EPOCH_S = 1_420_070_400;
+const MAX_EPOCH_S = 4_000_000_000;
 
 function extractSession(html) {
   const read = key => html.match(new RegExp(`"${key}":"((?:\\\\.|[^"\\\\])*)"`))?.[1];
@@ -35,20 +49,10 @@ function parseRpcResponse(text, rpcId) {
 }
 
 async function getSession() {
-  const res = await fetch(`${BASE}/app`, {
-    credentials: 'include',
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  assertNotCloudflareChallenge(res, 'Gemini');
-  if (res.status === 429) {
-    throw new RateLimitedError('Gemini session request -> 429 Too Many Requests', {
-      retryAfterMs: extractRetryAfter(res),
-    });
-  }
-  if (res.status === 401 || res.status === 403 || res.url.includes('accounts.google.com')) {
+  const res = await fetchWithBackoff(`${BASE}/app`, {}, { timeoutMs: REQUEST_TIMEOUT_MS });
+  if (res.url.includes('accounts.google.com')) {
     throw new NotLoggedInError('gemini.google.com');
   }
-  if (!res.ok) throw new Error(`GET ${BASE}/app -> ${res.status}`);
   const session = extractSession(await res.text());
   if (!session.at) throw new NotLoggedInError('gemini.google.com');
   const userIndex = res.url.match(/\/u\/(\d+)\//)?.[1] ?? null;
@@ -69,20 +73,15 @@ async function batchExecute(session, rpcId, arg) {
   const body = new URLSearchParams();
   body.set('f.req', JSON.stringify([[[rpcId, JSON.stringify(arg), null, 'generic']]]));
   body.set('at', session.at);
-  const res = await fetch(url, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8', 'X-Same-Domain': '1' },
-    body,
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  assertNotCloudflareChallenge(res, 'Gemini');
-  if (res.status === 401 || res.status === 403) throw new NotLoggedInError('gemini.google.com');
-  if (res.status === 429) {
-    const retryAfterMs = extractRetryAfter(res);
-    throw new RateLimitedError(`Gemini ${rpcId} -> 429 Too Many Requests`, { retryAfterMs });
-  }
-  if (!res.ok) throw new Error(`Gemini ${rpcId} -> ${res.status}`);
+  const res = await fetchWithBackoff(
+    url,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8', 'X-Same-Domain': '1' },
+      body,
+    },
+    { timeoutMs: REQUEST_TIMEOUT_MS }
+  );
   return parseRpcResponse(await res.text(), rpcId);
 }
 
@@ -118,10 +117,37 @@ async function listChats(session, sinceMs) {
   return [...chats.values()];
 }
 
-function assistantText(turn) {
-  const direct = turn?.[3]?.[0]?.[0]?.[1]?.[0];
-  if (typeof direct === 'string') return direct;
-  return '';
+/** A turn carries its own `[seconds, nanos]` pair as a direct child; its
+ * index has moved between UI versions, so scan from the end for the last
+ * plausible pair. */
+function turnTimestampMs(turn) {
+  if (!Array.isArray(turn)) return null;
+  for (let index = turn.length - 1; index >= 0; index--) {
+    const child = turn[index];
+    if (!Array.isArray(child) || child.length < 2) continue;
+    const [seconds, nanos] = child;
+    if (typeof seconds !== 'number' || typeof nanos !== 'number') continue;
+    if (seconds < MIN_EPOCH_S || seconds > MAX_EPOCH_S) continue;
+    return Math.floor(seconds * 1000 + nanos / 1e6);
+  }
+  return null;
+}
+
+/** Gemini can produce several drafts per turn. When the turn's id triple
+ * (`turn[1]`) names a candidate id that matches one of the drafts, use that
+ * draft; otherwise use the first draft, which the UI shows by default. The
+ * draft count is kept in message metadata. */
+function assistantReply(turn) {
+  const candidates = Array.isArray(turn?.[3]?.[0]) ? turn[3][0] : [];
+  const textOf = candidate => {
+    const text = candidate?.[1]?.[0];
+    return typeof text === 'string' ? text : '';
+  };
+  const selectedId = turn?.[1]?.[2];
+  const selected =
+    (typeof selectedId === 'string' && candidates.find(candidate => candidate?.[0] === selectedId)) ||
+    candidates[0];
+  return { text: textOf(selected), drafts: candidates.filter(candidate => textOf(candidate)).length };
 }
 
 async function readChat(session, summary) {
@@ -142,19 +168,27 @@ async function readChat(session, summary) {
   const messages = [];
   for (const turn of turns) {
     const user = turn?.[2]?.[0]?.[0];
-    const assistant = assistantText(turn);
+    const reply = assistantReply(turn);
+    const createdAt = turnTimestampMs(turn) ?? summary.updatedAt;
     if (typeof user === 'string' && user.trim()) {
-      messages.push({ role: 'user', content: user, createdAt: summary.updatedAt, model: null, parts: [textPart(user)] });
+      messages.push({ role: 'user', content: user, createdAt, model: null, parts: [textPart(user)] });
     }
-    if (assistant.trim()) {
-      messages.push({ role: 'assistant', content: assistant, createdAt: summary.updatedAt, model: 'gemini', parts: [textPart(assistant)] });
+    if (reply.text.trim()) {
+      messages.push({
+        role: 'assistant',
+        content: reply.text,
+        createdAt,
+        model: 'gemini',
+        parts: [textPart(reply.text)],
+        ...(reply.drafts > 1 ? { metadata: { drafts: reply.drafts } } : {}),
+      });
     }
   }
   if (messages.length === 0) return null;
   return {
     externalId: summary.id,
     title: summary.title,
-    createdAt: summary.updatedAt ?? Date.now(),
+    createdAt: messages.find(message => message.createdAt)?.createdAt ?? summary.updatedAt ?? Date.now(),
     updatedAt: summary.updatedAt,
     model: 'gemini',
     provider: 'google',
@@ -177,26 +211,29 @@ export async function syncGemini({ state, push, register = async () => {}, log, 
   const startIndex = Number.isInteger(pending?.nextIndex) ? pending.nextIndex : 0;
   const endIndex = Math.min(startIndex + SYNC_CHUNK_SIZE, summaries.length);
   await report({ phase: 'importing', detected: summaries.length, processed: startIndex });
+  const failures = createFailureTracker(state?.failed);
   let total = 0;
-  let failures = 0;
   let processed = startIndex;
   let batch = [];
+  let first = true;
   for (const summary of summaries.slice(startIndex, endIndex)) {
-    if (processed > startIndex) await sleepWithJitter(1500, 300);
+    processed++;
+    if (failures.shouldSkip(summary.id, summary.updatedAt)) continue;
+    if (!first) await sleepWithJitter(THROTTLE_MS, 300);
+    first = false;
     try {
       const conversation = await readChat(session, summary);
-      if (conversation) batch.push(conversation);
-      else throw new Error('Gemini returned no parseable conversation messages');
+      if (!conversation) throw new Error('Gemini returned no parseable conversation messages');
+      batch.push(conversation);
+      failures.recordSuccess(summary.id);
     } catch (error) {
       if (error instanceof RateLimitedError) {
         if (batch.length) await push('gemini-web', 'gemini', batch);
         throw error;
       }
-      failures++;
-      log(`gemini: skipping conversation ${summary.id}: ${error.message}`);
-      if (/repeated its pagination cursor|exceeded the 200-page safety limit/i.test(error.message)) throw error;
+      const skipped = failures.recordFailure(summary.id, summary.updatedAt, error);
+      log(`gemini: ${skipped ? 'skip-listing' : 'skipping'} conversation ${summary.id}: ${error.message}`);
     }
-    processed++;
     await report({ processed });
     if (batch.length >= 10) {
       total += await push('gemini-web', 'gemini', batch);
@@ -205,12 +242,15 @@ export async function syncGemini({ state, push, register = async () => {}, log, 
   }
   if (batch.length) total += await push('gemini-web', 'gemini', batch);
   const hasMore = endIndex < summaries.length;
-  const hadFailures = Boolean(pending?.hadFailures) || failures > 0;
+  // Retryable failures anywhere in a chunked run keep the old watermark;
+  // permanently failing chats are skip-listed instead.
+  const hadFailures = Boolean(pending?.hadFailures) || failures.blocking > 0;
   await report({ phase: hasMore ? 'queued' : 'complete', processed });
   return {
     state: hasMore
       ? {
           lastSyncMs,
+          failed: failures.toState(),
           pending: {
             runStartedMs,
             summaries,
@@ -218,10 +258,10 @@ export async function syncGemini({ state, push, register = async () => {}, log, 
             hadFailures,
           },
         }
-      : { lastSyncMs: hadFailures ? lastSyncMs : runStartedMs },
+      : { lastSyncMs: hadFailures ? lastSyncMs : runStartedMs, failed: failures.toState() },
     conversations: total,
     hasMore,
   };
 }
 
-export const geminiInternals = { extractSession, parseRpcResponse, listChats, readChat };
+export const geminiInternals = { extractSession, parseRpcResponse, listChats, readChat, turnTimestampMs, assistantReply };

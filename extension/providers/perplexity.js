@@ -1,11 +1,16 @@
-import { assertNotCloudflareChallenge, RateLimitedError, fetchJson, sleepWithJitter, textPart, toMs } from '../lib/common.js';
+// Perplexity web sync via the authenticated thread endpoints used by its UI.
+
+import { RateLimitedError, createFailureTracker, fetchJson, sleepWithJitter, textPart, toMs } from '../lib/common.js';
 
 const BASE = 'https://www.perplexity.ai';
 const LIST_URL = `${BASE}/rest/thread/list_ask_threads?version=2.18&source=default`;
 const PAGE_SIZE = 20;
 const OVERLAP_MS = 5 * 60 * 1000;
-const THROTTLE_MS = 1500;
+const ENTRY_PAGE_SIZE = 100;
 const MAX_PAGES = 101;
+// Pace requests well under the rate limit; a 429 aborts the run so the
+// background circuit breaker can cool the provider down.
+const THROTTLE_MS = 1500;
 
 const headers = {
   accept: '*/*',
@@ -18,6 +23,7 @@ async function listThreads(sinceMs) {
   const threads = [];
   const seenPages = new Set();
   for (let page = 0, offset = 0; page < MAX_PAGES; page++, offset += PAGE_SIZE) {
+    if (offset > 0) await sleepWithJitter(THROTTLE_MS, 400);
     const data = await fetchJson(LIST_URL, {
       method: 'POST',
       headers,
@@ -50,21 +56,33 @@ function answerText(entry) {
   return '';
 }
 
-async function readThread(summary) {
+/** A thread's entries come back oldest first in pages; long threads span
+ * several. `has_next_page` is authoritative when present, otherwise a full
+ * page means there may be more. */
+async function readThreadEntries(slug) {
   const entries = [];
   const seenPages = new Set();
-  for (let pageNumber = 0, offset = 0; pageNumber < MAX_PAGES; pageNumber++, offset += 100) {
-    const url = `${BASE}/rest/thread/${encodeURIComponent(summary.slug)}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=100&offset=${offset}&from_first=true`;
+  for (let page = 0, offset = 0; page < MAX_PAGES; page++, offset += ENTRY_PAGE_SIZE) {
+    if (offset > 0) await sleepWithJitter(THROTTLE_MS, 400);
+    const url = `${BASE}/rest/thread/${encodeURIComponent(slug)}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${ENTRY_PAGE_SIZE}&offset=${offset}&from_first=true`;
     const data = await fetchJson(url, { headers });
-    if (!Array.isArray(data?.entries)) throw new Error(`Perplexity returned malformed detail for ${summary.slug}`);
-    const page = data.entries;
-    const signature = JSON.stringify(page.map(entry => entry?.uuid ?? entry?.id ?? [entry?.query_str, entry?.updated_datetime]));
-    if (page.length && seenPages.has(signature)) throw new Error(`Perplexity repeated detail page for ${summary.slug}`);
-    if (page.length) seenPages.add(signature);
-    entries.push(...page);
-    if (page.length < 100) break;
-    if (pageNumber === MAX_PAGES - 1) throw new Error(`Perplexity detail exceeded its safety page limit for ${summary.slug}`);
+    if (!Array.isArray(data?.entries)) throw new Error(`Perplexity returned malformed detail for ${slug}`);
+    const pageEntries = data.entries;
+    const signature = JSON.stringify(
+      pageEntries.map(entry => entry?.uuid ?? entry?.id ?? [entry?.query_str, entry?.updated_datetime])
+    );
+    if (pageEntries.length && seenPages.has(signature)) throw new Error(`Perplexity repeated detail page for ${slug}`);
+    seenPages.add(signature);
+    entries.push(...pageEntries);
+    const hasNext =
+      typeof data.has_next_page === 'boolean' ? data.has_next_page : pageEntries.length >= ENTRY_PAGE_SIZE;
+    if (!hasNext || pageEntries.length === 0) return entries;
   }
+  throw new Error(`Perplexity detail exceeded its safety page limit for ${slug}`);
+}
+
+async function readThread(summary) {
+  const entries = await readThreadEntries(summary.slug);
   const messages = [];
   for (const entry of entries) {
     const createdAt = toMs(entry.updated_datetime ?? entry.entry_updated_datetime) ?? summary.updatedAt;
@@ -98,34 +116,40 @@ export async function syncPerplexity({ state, push, register = async () => {}, l
   const runStartedMs = Date.now();
   const summaries = await listThreads(since);
   await report({ phase: 'importing', detected: summaries.length, processed: 0 });
+  const failures = createFailureTracker(state?.failed);
   let total = 0;
-  let failures = 0;
   let processed = 0;
-  const staged = [];
+  let batch = [];
   let first = true;
   for (const summary of summaries) {
+    processed++;
+    if (failures.shouldSkip(summary.slug, summary.updatedAt)) continue;
     if (!first) await sleepWithJitter(THROTTLE_MS, 400);
     first = false;
     try {
-      const conversation = await readThread(summary);
-      staged.push(conversation);
+      batch.push(await readThread(summary));
+      failures.recordSuccess(summary.slug);
     } catch (error) {
       if (error instanceof RateLimitedError) {
+        if (batch.length) total += await push('perplexity-web', 'perplexity', batch);
         throw error;
       }
-      failures++;
-      log(`perplexity: skipping thread ${summary.slug}: ${error.message}`);
-      if (/repeated|safety page limit|malformed detail/i.test(error.message)) throw error;
+      const skipped = failures.recordFailure(summary.slug, summary.updatedAt, error);
+      log(`perplexity: ${skipped ? 'skip-listing' : 'skipping'} thread ${summary.slug}: ${error.message}`);
     }
-    processed++;
     await report({ processed });
+    if (batch.length >= 10) {
+      total += await push('perplexity-web', 'perplexity', batch);
+      batch = [];
+    }
   }
-  for (let index = 0; index < staged.length; index += 10) {
-    total += await push('perplexity-web', 'perplexity', staged.slice(index, index + 10));
-  }
+  if (batch.length) total += await push('perplexity-web', 'perplexity', batch);
   await report({ phase: 'complete', processed });
   return {
-    state: { lastSyncMs: failures ? lastSyncMs : runStartedMs },
+    state: {
+      lastSyncMs: failures.blocking > 0 ? lastSyncMs : runStartedMs,
+      failed: failures.toState(),
+    },
     conversations: total,
   };
 }

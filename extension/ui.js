@@ -70,7 +70,7 @@ export function providerState(entry, enabled = true, { apiConnected = false } = 
   if (
     apiConnected &&
     entry.lastError &&
-    (entry.lastError.includes('cannot reach hstry-api') || entry.lastError.includes('Failed to fetch'))
+    entry.lastError.includes('cannot reach hstry-api')
   ) {
     return {
       tone: 'idle',
@@ -111,6 +111,8 @@ export function progressDetail(progress) {
 export function friendlyError(error) {
   const text = String(error ?? 'Unknown sync error');
   if (text.includes('not logged in')) return 'Open this provider and sign in, then sync again.';
+  const site = text.match(/site access (?:to|for) (\S+?)(?: is|$| and)/)?.[1];
+  if (site) return `Allow the extension to read ${site}: extension details → Site access → On all sites.`;
   if (text.includes('cannot reach hstry-api') || text.includes('Failed to fetch')) {
     return 'The local hstry API is offline. Start it, then try again.';
   }

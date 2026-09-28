@@ -4,6 +4,7 @@
 import {
   NotLoggedInError,
   RateLimitedError,
+  createFailureTracker,
   fetchJson,
   sleep,
   textPart,
@@ -495,35 +496,38 @@ export async function syncGrok({
   const summaries = await listConversations(since, { maxPages });
   await report({ phase: 'importing', detected: summaries.length, processed: 0 });
 
+  const failures = createFailureTracker(state?.failed);
   let total = 0;
-  let failures = 0;
+  let listFailures = 0;
   let processed = 0;
   let batch = [];
   let first = true;
 
   if (summaries.truncated) {
-    failures++;
+    listFailures++;
     log('grok: conversation list reached page limit with remaining pages; preserving watermark');
   }
 
   for (const summary of summaries) {
+    processed++;
+    if (failures.shouldSkip(summary.conversationId, summary.updatedAt)) continue;
     if (!first) await sleep(THROTTLE_MS);
     first = false;
 
     try {
       const conv = await readConversation(summary);
-      if (conv) batch.push(conv);
-      else throw new Error('Grok returned no parseable conversation messages');
+      if (!conv) throw new Error('Grok returned no parseable conversation messages');
+      batch.push(conv);
+      failures.recordSuccess(summary.conversationId);
     } catch (err) {
       if (err instanceof RateLimitedError) {
-        if (batch.length) total += await push('grok-web', 'grok', batch);
+        if (batch.length > 0) total += await push('grok-web', 'grok', batch);
         throw err;
       }
-      failures++;
-      log(`grok: skipping conversation ${summary.conversationId}: ${err.message}`);
+      const skipped = failures.recordFailure(summary.conversationId, summary.updatedAt, err);
+      log(`grok: ${skipped ? 'skip-listing' : 'skipping'} conversation ${summary.conversationId}: ${err.message}`);
     }
 
-    processed++;
     await report({ phase: 'importing', detected: summaries.length, processed });
 
     if (batch.length >= 10) {
@@ -536,14 +540,17 @@ export async function syncGrok({
     total += await push('grok-web', 'grok', batch);
   }
 
-  if (failures > 0) {
-    log(`grok: ${failures} issue(s) during sync; keeping watermark to retry next run`);
+  // Retryable failures keep the watermark; permanently failing
+  // conversations are skip-listed so they cannot pin it forever.
+  const holding = failures.blocking + listFailures;
+  if (holding > 0) {
+    log(`grok: ${holding} issue(s) during sync; keeping watermark to retry next run`);
   }
 
   await report({ phase: 'complete', detected: summaries.length, processed });
 
   return {
-    state: { lastSyncMs: failures > 0 ? lastSyncMs : runStartedMs },
+    state: { lastSyncMs: holding > 0 ? lastSyncMs : runStartedMs, failed: failures.toState() },
     conversations: total,
   };
 }

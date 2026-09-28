@@ -1,9 +1,12 @@
-// ChatGPT provider: syncs conversations (personal + Teams workspaces) via the
-// chatgpt.com backend API, authenticated with the browser session cookies.
+// ChatGPT provider: syncs conversations (personal + Teams workspaces, including
+// archived and project conversations) via the chatgpt.com backend API,
+// authenticated with the browser session cookies.
 
 import {
+  HttpError,
   NotLoggedInError,
   RateLimitedError,
+  createFailureTracker,
   fetchJson,
   shortId,
   sleep,
@@ -15,6 +18,7 @@ import {
 
 const BASE = 'https://chatgpt.com';
 const PAGE_SIZE = 50;
+const PROJECT_PAGE_SIZE = 50;
 // Refetch a little history on every run so near-simultaneous edits are not
 // missed between polls.
 const OVERLAP_MS = 5 * 60 * 1000;
@@ -61,19 +65,122 @@ async function listAccounts(token) {
   return [{ id: null, name: 'default', isWorkspace: false }];
 }
 
-async function* listUpdatedConversations(token, accountId, sinceMs) {
+/** Walk an offset-paged conversation list ordered by update time (newest
+ * first), stopping at the first item at or before `sinceMs`. The reported
+ * `total` is not trusted as a stop condition: only a short page ends the walk. */
+async function* listUpdatedConversations(token, accountId, sinceMs, { archived = false } = {}) {
   for (let offset = 0; ; offset += PAGE_SIZE) {
+    const archivedParam = archived ? '&is_archived=true' : '';
     const data = await fetchJson(
-      `${BASE}/backend-api/conversations?offset=${offset}&limit=${PAGE_SIZE}&order=updated`,
+      `${BASE}/backend-api/conversations?offset=${offset}&limit=${PAGE_SIZE}&order=updated${archivedParam}`,
       { headers: authHeaders(token, accountId) }
     );
     const items = data?.items ?? [];
     for (const item of items) {
       const updatedMs = toMs(item.update_time);
       if (sinceMs && updatedMs && updatedMs <= sinceMs) return;
-      yield item;
+      yield archived ? { ...item, is_archived: true } : item;
     }
-    if (items.length < PAGE_SIZE || offset + PAGE_SIZE >= (data?.total ?? 0)) return;
+    if (items.length < PAGE_SIZE) return;
+  }
+}
+
+/** Projects ("snorlax" gizmos) keep their conversations out of the main list. */
+async function listProjects(token, accountId) {
+  const projects = [];
+  let cursor = null;
+  for (let page = 0; page < 100; page++) {
+    const cursorParam = cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`;
+    const data = await fetchJson(
+      `${BASE}/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0${cursorParam}`,
+      { headers: authHeaders(token, accountId) }
+    );
+    for (const entry of data?.items ?? []) {
+      const gizmo = entry?.gizmo?.gizmo ?? entry?.gizmo;
+      if (gizmo?.id) projects.push({ id: gizmo.id, name: gizmo.display?.name ?? gizmo.id });
+    }
+    const next = data?.cursor ?? null;
+    if (next === null || next === cursor) break;
+    cursor = next;
+  }
+  return projects;
+}
+
+/** Walk one project's cursor-paged conversation list. Its ordering is not
+ * documented, so items are filtered individually and the walk stops once a
+ * non-empty page is entirely at or before `sinceMs`. */
+async function* listProjectConversations(token, accountId, project, sinceMs) {
+  let cursor = '0';
+  for (let page = 0; page < 200; page++) {
+    await sleep(THROTTLE_MS);
+    const data = await fetchJson(
+      `${BASE}/backend-api/gizmos/${encodeURIComponent(project.id)}/conversations?cursor=${encodeURIComponent(cursor)}&limit=${PROJECT_PAGE_SIZE}`,
+      { headers: authHeaders(token, accountId) }
+    );
+    const items = data?.items ?? [];
+    let fresh = 0;
+    for (const item of items) {
+      const updatedMs = toMs(item.update_time);
+      if (sinceMs && updatedMs && updatedMs <= sinceMs) continue;
+      fresh++;
+      yield { ...item, project };
+    }
+    const next = data?.cursor ?? null;
+    if (next === null || String(next) === cursor) return;
+    if (items.length > 0 && fresh === 0) return;
+    cursor = String(next);
+  }
+}
+
+/** Secondary lists (archive, projects) may be unavailable on some account
+ * types. A 4xx other than 429 means "not supported here": log and move on.
+ * Anything else holds the watermark so the list is retried next run. */
+function isUnsupportedList(err) {
+  return err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 429;
+}
+
+/** Every conversation updated since `sinceMs` across the main list, the
+ * archive, and each project, deduplicated by id. */
+async function* listAllUpdatedConversations(token, accountId, sinceMs, { log, onListError }) {
+  const seen = new Set();
+  const fresh = item => {
+    if (!item?.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  };
+
+  for await (const item of listUpdatedConversations(token, accountId, sinceMs)) {
+    if (fresh(item)) yield item;
+  }
+
+  const secondary = [
+    ['archived conversations', () => listUpdatedConversations(token, accountId, sinceMs, { archived: true })],
+  ];
+  let projects = [];
+  try {
+    projects = await listProjects(token, accountId);
+  } catch (err) {
+    if (err instanceof RateLimitedError) throw err;
+    if (!isUnsupportedList(err)) onListError(err);
+    log(`chatgpt: cannot list projects: ${err.message}`);
+  }
+  for (const project of projects) {
+    secondary.push([
+      `project ${project.name}`,
+      () => listProjectConversations(token, accountId, project, sinceMs),
+    ]);
+  }
+
+  for (const [label, list] of secondary) {
+    try {
+      for await (const item of list()) {
+        if (fresh(item)) yield item;
+      }
+    } catch (err) {
+      if (err instanceof RateLimitedError) throw err;
+      if (!isUnsupportedList(err)) onListError(err);
+      log(`chatgpt: cannot list ${label}: ${err.message}`);
+    }
   }
 }
 
@@ -251,13 +358,15 @@ function extractMessage(node) {
   };
 }
 
-function toParsedConversation(detail, conversationId, accountId) {
+function toParsedConversation(detail, conversationId, accountId, item = {}) {
   const messages = linearize(detail)
     .map(extractMessage)
     .filter(Boolean);
   if (messages.length === 0) return null;
 
   const model = [...messages].reverse().find(m => m.model)?.model ?? null;
+  const templateId = detail?.conversation_template_id ?? detail?.gizmo_id ?? '';
+  const projectId = item.project?.id ?? (templateId.startsWith('g-p-') ? templateId : null);
 
   return {
     externalId: conversationId,
@@ -270,6 +379,9 @@ function toParsedConversation(detail, conversationId, accountId) {
     metadata: {
       url: `${BASE}/c/${conversationId}`,
       ...(accountId ? { accountId } : {}),
+      ...(projectId ? { projectId } : {}),
+      ...(item.project?.name ? { projectName: item.project.name } : {}),
+      ...(item.is_archived || detail?.is_archived ? { archived: true } : {}),
     },
   };
 }
@@ -290,11 +402,18 @@ export async function syncChatGPT({ state, push, register = async () => {}, log,
     const lastSyncMs = state?.accounts?.[key]?.lastSyncMs ?? null;
     const since = lastSyncMs ? lastSyncMs - OVERLAP_MS : null;
     const runStartedMs = Date.now();
-    let failures = 0;
+    const failures = createFailureTracker(state?.accounts?.[key]?.failed);
+    let listFailures = 0;
 
     let batch = [];
     let first = true;
-    for await (const item of listUpdatedConversations(token, account.id, since)) {
+    const listed = listAllUpdatedConversations(token, account.id, since, {
+      log,
+      onListError: () => listFailures++,
+    });
+    for await (const item of listed) {
+      const updatedMs = toMs(item.update_time);
+      if (failures.shouldSkip(item.id, updatedMs)) continue;
       detected++;
       await report({ phase: 'importing', detected, processed });
       if (!first) await sleepWithJitter(THROTTLE_MS, 400);
@@ -303,18 +422,17 @@ export async function syncChatGPT({ state, push, register = async () => {}, log,
         const detail = await fetchJson(`${BASE}/backend-api/conversation/${item.id}`, {
           headers: authHeaders(token, account.id),
         });
-        const conv = toParsedConversation(detail, item.id, account.id);
-        if (conv) batch.push(conv);
-        else throw new Error('ChatGPT returned no parseable conversation messages');
+        const conv = toParsedConversation(detail, item.id, account.id, item);
+        if (!conv) throw new Error('ChatGPT returned no parseable conversation messages');
+        batch.push(conv);
+        failures.recordSuccess(item.id);
       } catch (err) {
         if (err instanceof RateLimitedError) {
-          if (batch.length > 0) {
-            total += await push(sourceId, 'chatgpt-web', batch);
-          }
+          if (batch.length > 0) total += await push(sourceId, 'chatgpt-web', batch);
           throw err;
         }
-        failures++;
-        log(`chatgpt: skipping conversation ${item.id}: ${err.message}`);
+        const skipped = failures.recordFailure(item.id, updatedMs, err);
+        log(`chatgpt: ${skipped ? 'skip-listing' : 'skipping'} conversation ${item.id}: ${err.message}`);
       }
       processed++;
       await report({ detected, processed });
@@ -327,15 +445,19 @@ export async function syncChatGPT({ state, push, register = async () => {}, log,
       total += await push(sourceId, 'chatgpt-web', batch);
     }
 
-    // Only advance the watermark on a clean run. If any conversation failed
-    // (e.g. persistent 429), keep the old watermark so the next sync retries
-    // them rather than skipping past them forever. Re-pushes dedupe server-side.
-    if (failures > 0) {
-      log(`chatgpt: ${failures} conversation(s) failed; keeping watermark to retry next run`);
+    // Only advance the watermark when nothing retryable failed. Transient
+    // failures (429, 5xx, a list that could not be read) keep the old
+    // watermark so the next sync retries them; conversations that failed
+    // permanently are skip-listed instead of pinning the watermark forever.
+    // Re-pushes dedupe server-side.
+    const holding = failures.blocking + listFailures;
+    if (holding > 0) {
+      log(`chatgpt: ${holding} retryable failure(s); keeping watermark to retry next run`);
     }
     newState.accounts[key] = {
-      lastSyncMs: failures > 0 ? lastSyncMs : runStartedMs,
+      lastSyncMs: holding > 0 ? lastSyncMs : runStartedMs,
       name: account.name,
+      failed: failures.toState(),
     };
   }
 

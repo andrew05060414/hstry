@@ -8,11 +8,11 @@ function check(label, actual, expected) {
 }
 
 const now = Date.parse('2026-07-10T12:00:00Z');
-check('new providers are opt-in', DEFAULT_PROVIDER_SETTINGS, {
+check('Gemini and Grok on by default, Perplexity opt-in', DEFAULT_PROVIDER_SETTINGS, {
   chatgpt: true,
   claude: true,
-  gemini: false,
-  grok: false,
+  gemini: true,
+  grok: true,
   perplexity: false,
 });
 check('never synced time', formatTime(null, now), 'Never');
@@ -21,6 +21,8 @@ check('fresh provider is informative', providerState(undefined, true), { tone: '
 check('disabled provider is paused', providerState(undefined, false).label, 'Paused');
 check('offline error is actionable', friendlyError('cannot reach hstry-api at x'), 'The local hstry API is offline. Start it, then try again.');
 check('login error is actionable', friendlyError('claude.ai: not logged in'), 'Open this provider and sign in, then sync again.');
+check('missing site access is named, not reported as API offline', friendlyError('site access to chatgpt.com is not granted — open the details page'), 'Allow the extension to read chatgpt.com: extension details → Site access → On all sites.');
+check('blocked provider fetch points at site access', friendlyError("request to grok.com was blocked (Failed to fetch) — check the extension's site access for grok.com and that the site opens in this browser"), 'Allow the extension to read grok.com: extension details → Site access → On all sites.');
 check('recovered API makes stale offline failure retryable', providerState({
   lastRunMs: now - 27 * 60_000,
   lastError: 'cannot reach hstry-api at http://127.0.0.1:3000/ingest',
@@ -45,7 +47,6 @@ check('queued provider explains continuation', providerState({
   label: 'Continuing',
   detail: '219 detected · 10 processed · next batch queued',
 });
-check('Grok remains visible as an opt-in provider', DEFAULT_PROVIDER_SETTINGS.grok, false);
 const cooldownUntilMs = Date.now() + 60_000;
 check('cooldown is visible to the provider', providerState({ cooldownUntilMs }, true), {
   tone: 'muted',

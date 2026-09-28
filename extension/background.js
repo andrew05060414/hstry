@@ -1,4 +1,5 @@
-// hstry sync service worker: polls AI chat platforms on an alarm and pushes
+// Chronicle web capture service worker (alarm and log names keep the
+// historical "hstry-sync" prefix for compatibility): polls AI chat platforms on an alarm and pushes
 // new/updated conversations to a local hstry-api instance (POST /ingest).
 
 import { NotLoggedInError, RateLimitedError } from './lib/common.js';
@@ -164,6 +165,28 @@ async function checkApi() {
   }
 }
 
+/** Without site access (Edge/Chrome "Site access: On click" or "On specific
+ * sites"), provider requests are CORS-blocked and surface as a bare
+ * "Failed to fetch" that looks like the local API being down. Check first and
+ * say what is actually wrong. */
+async function ensureSiteAccess(provider) {
+  if (!chrome.permissions?.contains || !provider.origin) return;
+  if (await chrome.permissions.contains({ origins: [provider.origin] })) return;
+  throw new Error(
+    `site access to ${provider.site} is not granted — open the extension's details page and set Site access to "On all sites"`
+  );
+}
+
+/** A provider-side fetch() rejection (the ingest push reports its own
+ * errors) means the browser blocked or dropped the request. */
+function describeProviderError(err, provider) {
+  if (err instanceof NotLoggedInError) return `${err.message} — open the site and log in`;
+  if (err instanceof TypeError && /fetch/i.test(err.message)) {
+    return `request to ${provider.site} was blocked (${err.message}) — check the extension's site access for ${provider.site} and that the site opens in this browser`;
+  }
+  return err.message;
+}
+
 async function ensureAlarm() {
   const settings = await getSettings();
   const existing = await chrome.alarms.get(ALARM_NAME);
@@ -287,6 +310,7 @@ async function runSync(
       });
       const register = makeRegister(settings);
       try {
+        await ensureSiteAccess(provider);
         const result = await provider.sync({
           state: entry.state ?? {},
           push,
@@ -323,8 +347,7 @@ async function runSync(
           );
         } else {
           anyError = true;
-          entry.lastError =
-            err instanceof NotLoggedInError ? `${err.message} — open the site and log in` : err.message;
+          entry.lastError = describeProviderError(err, provider);
           entry.running = false;
           entry.progress = { ...entry.progress, phase: 'failed' };
           console.warn(`[hstry-sync] ${name} failed:`, err);
