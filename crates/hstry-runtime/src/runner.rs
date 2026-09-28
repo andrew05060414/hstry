@@ -336,6 +336,13 @@ impl AdapterRunner {
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // The service runs without a console; without this flag Windows gives
+        // every adapter a fresh, visible console (a Windows Terminal popup).
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         // A caller's timeout drops this future; never leave the adapter behind.
         cmd.kill_on_drop(true);
 
