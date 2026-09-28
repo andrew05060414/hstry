@@ -225,13 +225,20 @@ match the current hstry version.
 
 ## Browser extension
 
-`extension/` contains **hstry sync**, a Chrome MV3 extension that background-syncs conversations from ChatGPT, Claude, Gemini, and Perplexity into your local database. It POSTs new conversations to a running `hstry-api` instance (`http://127.0.0.1:3000/ingest`, token-authenticated).
+`extension/` contains **Chronicle 网页采集** (formerly "hstry sync"), a Chrome/Edge MV3 extension that background-syncs conversations from ChatGPT (including projects and archived chats), Claude, Gemini, Grok, and Perplexity into your local database. It POSTs new conversations to a running `hstry-api` instance (`http://127.0.0.1:3000/ingest`, token-authenticated).
 
 ```bash
 hstry-api --port 3000   # start the API, optionally with --token <secret>
 ```
 
-Load it from `chrome://extensions` with Developer mode enabled (Load unpacked, select `extension/`). Provider toggles, port, and token are configured on the extension's options page. The `hstry web` Playwright commands are the headless alternative to the extension.
+Install it into a stable directory exported from `origin/main`, so switching branches in the checkout never changes what the browser runs:
+
+```bash
+just install-extension --dest <dir>   # first time; later runs reuse <dir>
+# without just: node scripts/install-extension.mjs --dest <dir>
+```
+
+Then load `<dir>` from `chrome://extensions` / `edge://extensions` (Developer mode, Load unpacked). After each later `just install-extension`, click Reload on the extension. The manifest pins a public key, so the extension ID is the same in every directory and on every machine. Provider toggles, port, and token are configured on the extension's options page. The `hstry web` Playwright commands are the headless alternative to the extension.
 
 ## Search Modes
 
