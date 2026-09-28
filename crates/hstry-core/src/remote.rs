@@ -22,6 +22,20 @@ use crate::recall::SearchReport;
 /// Default remote database path (XDG standard).
 pub const DEFAULT_REMOTE_DB_PATH: &str = "~/.local/share/hstry/hstry.db";
 
+/// `Command::new` that never opens a console window on Windows. The service
+/// has no console, so ssh/scp would otherwise each pop up a visible terminal.
+fn no_window_command(program: &str) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 #[derive(Debug, Deserialize)]
 struct JsonResponse<T> {
     ok: bool,
@@ -112,7 +126,7 @@ impl SshTransport {
 
     /// Build SSH command with common options.
     fn ssh_command(&self) -> Command {
-        let mut cmd = Command::new("ssh");
+        let mut cmd = no_window_command("ssh");
         cmd.arg("-o")
             .arg("BatchMode=yes")
             .arg("-o")
@@ -135,7 +149,7 @@ impl SshTransport {
 
     /// Build SCP command with common options.
     fn scp_command(&self) -> Command {
-        let mut cmd = Command::new("scp");
+        let mut cmd = no_window_command("scp");
         cmd.arg("-o")
             .arg("BatchMode=yes")
             .arg("-o")
