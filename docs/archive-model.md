@@ -1,7 +1,7 @@
 # hstry 档案层模型（通用部署）
 
-把多台机器上的 AI 对话收成一份能搜、能按设备分开、坏了能在目标电脑恢复的档案。
-不是聊天 App，不是记忆系统。记忆（Agent Memory）是这份档案的客户。
+把多台机器上的 AI 对话收成一份能备份、能按设备分开、坏了能在目标电脑恢复的档案。
+不是聊天 App，也不是产品级主检索入口。AgentsView 是 Andrew 工作流的主检索面（含向量检索）；Chronicle / HSTRY 负责聊天记录备份、归档、恢复与底层核验。
 
 本页描述通用部署合同。采集优先，恢复说明见 [`restore.md`](./restore.md)。项目为什么变成这样、对话里拍过的板，见 [`project-thread.md`](./project-thread.md)。
 
@@ -16,9 +16,10 @@
      本机 staging.db  ──push device_id──►  NAS hub hstry.db
                                               │
                                               ├── rclone / 飞牛 Cloud Sync ──► 云盘快照（Google Drive）
-                                              └── Search API / CLI / MCP ──► 人 + 其他 agent
-                                                                              │
-                                                                              └── Agent Memory（以后）
+                                              ├── Chronicle CLI / Search API ──► 归档核验、恢复、导出
+                                              └── AgentsView（主入口，向量检索） ──► 人 + 其他 agent
+                                                                                       │
+                                                                                       └── Agent Memory（以后）
 ```
 
 | 层 | 职责 | 1.0 现状 | 1.x |
@@ -26,7 +27,7 @@
 | 采集 | 各工具对话 → 规范化会话 | Cursor/Codex/… + **Antigravity 三根** + **dsh** + **zcode** | 本机没有数据的工具不预做 |
 | 档案 | 一台机一份 staging，NAS 一份合并 hub | `device_id` 命名空间 merge | 保持 dumb：不抽取记忆 |
 | 备份/恢复 | hub 库的时间点副本；在目标电脑恢复后能搜 | push 是 merge，不是备份 | 见 [`restore.md`](./restore.md) |
-| 检索 | 跨工具、跨设备搜 | CLI FTS + Search API | **satellite 默认问 hub** |
+| 检索 | 跨工具、跨设备搜 | AgentsView 为主入口（含向量检索）；Chronicle CLI / Search API 做归档核验 | **satellite 默认问 hub** |
 
 ---
 

@@ -1,11 +1,14 @@
 // Perplexity web sync via the authenticated thread endpoints used by its UI.
 
-import { fetchJson, textPart, toMs } from '../lib/common.js';
+import { createFailureTracker, fetchJson, sleep, textPart, toMs } from '../lib/common.js';
 
 const BASE = 'https://www.perplexity.ai';
 const LIST_URL = `${BASE}/rest/thread/list_ask_threads?version=2.18&source=default`;
 const PAGE_SIZE = 20;
 const OVERLAP_MS = 5 * 60 * 1000;
+const ENTRY_PAGE_SIZE = 100;
+// Pace requests; fetchJson handles 429 bursts, pacing avoids them.
+const THROTTLE_MS = 500;
 
 const headers = {
   accept: '*/*',
@@ -17,6 +20,7 @@ const headers = {
 async function listThreads(sinceMs) {
   const threads = [];
   for (let offset = 0; offset <= 10_000; offset += PAGE_SIZE) {
+    if (offset > 0) await sleep(THROTTLE_MS);
     const data = await fetchJson(LIST_URL, {
       method: 'POST',
       headers,
@@ -44,10 +48,25 @@ function answerText(entry) {
   return '';
 }
 
+/** A thread's entries come back oldest first in pages; long threads span
+ * several. `has_next_page` is authoritative when present, otherwise a full
+ * page means there may be more. */
+async function readThreadEntries(slug) {
+  const entries = [];
+  for (let offset = 0; offset <= 10_000; offset += ENTRY_PAGE_SIZE) {
+    if (offset > 0) await sleep(THROTTLE_MS);
+    const url = `${BASE}/rest/thread/${encodeURIComponent(slug)}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${ENTRY_PAGE_SIZE}&offset=${offset}&from_first=true`;
+    const data = await fetchJson(url, { headers });
+    const page = Array.isArray(data?.entries) ? data.entries : [];
+    entries.push(...page);
+    const hasNext = typeof data?.has_next_page === 'boolean' ? data.has_next_page : page.length >= ENTRY_PAGE_SIZE;
+    if (!hasNext || page.length === 0) break;
+  }
+  return entries;
+}
+
 async function readThread(summary) {
-  const url = `${BASE}/rest/thread/${encodeURIComponent(summary.slug)}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=100&offset=0&from_first=true`;
-  const data = await fetchJson(url, { headers });
-  const entries = Array.isArray(data?.entries) ? data.entries : [];
+  const entries = await readThreadEntries(summary.slug);
   const messages = [];
   for (const entry of entries) {
     const createdAt = toMs(entry.updated_datetime ?? entry.entry_updated_datetime) ?? summary.updatedAt;
@@ -81,19 +100,24 @@ export async function syncPerplexity({ state, push, register = async () => {}, l
   const runStartedMs = Date.now();
   const summaries = await listThreads(since);
   await report({ phase: 'importing', detected: summaries.length, processed: 0 });
+  const failures = createFailureTracker(state?.failed);
   let total = 0;
-  let failures = 0;
   let processed = 0;
   let batch = [];
+  let first = true;
   for (const summary of summaries) {
+    processed++;
+    if (failures.shouldSkip(summary.slug, summary.updatedAt)) continue;
+    if (!first) await sleep(THROTTLE_MS);
+    first = false;
     try {
       const conversation = await readThread(summary);
       if (conversation) batch.push(conversation);
+      failures.recordSuccess(summary.slug);
     } catch (error) {
-      failures++;
-      log(`perplexity: skipping thread ${summary.slug}: ${error.message}`);
+      const skipped = failures.recordFailure(summary.slug, summary.updatedAt, error);
+      log(`perplexity: ${skipped ? 'skip-listing' : 'skipping'} thread ${summary.slug}: ${error.message}`);
     }
-    processed++;
     await report({ processed });
     if (batch.length >= 10) {
       total += await push('perplexity-web', 'perplexity', batch);
@@ -103,7 +127,10 @@ export async function syncPerplexity({ state, push, register = async () => {}, l
   if (batch.length) total += await push('perplexity-web', 'perplexity', batch);
   await report({ phase: 'complete', processed });
   return {
-    state: { lastSyncMs: failures ? lastSyncMs : runStartedMs },
+    state: {
+      lastSyncMs: failures.blocking > 0 ? lastSyncMs : runStartedMs,
+      failed: failures.toState(),
+    },
     conversations: total,
   };
 }
