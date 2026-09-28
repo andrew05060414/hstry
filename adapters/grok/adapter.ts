@@ -170,9 +170,85 @@ const adapter: Adapter = {
         mimeType: 'application/json',
       };
     }
+    if (opts.format === 'grok') {
+      const files = conversations.map((conversation, index) => {
+        const id = safeExportId(conversation.externalId ?? `conversation-${index + 1}`);
+        const sessionId = conversation.externalId ?? `chronicle-grok-${index + 1}`;
+        const firstPrompt = conversation.messages.find(message => message.role === 'user')?.content;
+        const title = conversation.title ?? firstPrompt ?? 'Chronicle web conversation';
+        const summary = {
+          info: { id: sessionId },
+          session_summary: title,
+          generated_title: conversation.title,
+          created_at: new Date(conversation.createdAt).toISOString(),
+          updated_at: new Date(conversation.updatedAt ?? conversation.createdAt).toISOString(),
+          last_active_at: new Date(conversation.updatedAt ?? conversation.createdAt).toISOString(),
+          current_model_id: conversation.model,
+          num_chat_messages: conversation.messages.length,
+          chat_format_version: 1,
+          agent_name: 'grok',
+          cwd: 'grok-web',
+          source_workspace_dir: 'grok-web',
+        };
+        const records: Record<string, unknown>[] = [];
+
+        for (const [messageIndex, message] of conversation.messages.entries()) {
+          const timestamp = new Date(message.createdAt ?? conversation.createdAt).toISOString();
+          if (message.role === 'user') {
+            records.push({
+              type: 'user',
+              id: `${sessionId}-user-${messageIndex + 1}`,
+              content: message.content,
+              created_at: timestamp,
+              prompt_index: messageIndex,
+            });
+          } else if (message.role === 'assistant') {
+            records.push({
+              type: 'assistant',
+              id: `${sessionId}-assistant-${messageIndex + 1}`,
+              content: message.content,
+              created_at: timestamp,
+              ...(message.model ? { model_id: message.model } : {}),
+            });
+          } else if (message.role === 'tool' && opts.includeTools !== false) {
+            records.push({
+              type: 'tool_result',
+              id: `${sessionId}-tool-${messageIndex + 1}`,
+              content: message.content,
+              created_at: timestamp,
+            });
+          }
+        }
+
+        return {
+          files: [
+            {
+              path: `grok-web/${id}/summary.json`,
+              content: JSON.stringify(summary, null, opts.pretty ? 2 : 0),
+              encoding: 'utf8' as const,
+            },
+            {
+              path: `grok-web/${id}/chat_history.jsonl`,
+              content: records.map(record => JSON.stringify(record)).join('\n') + '\n',
+              encoding: 'utf8' as const,
+            },
+          ],
+        };
+      }).flatMap(result => result.files);
+
+      return {
+        format: 'grok',
+        files,
+        mimeType: 'application/x-ndjson',
+      };
+    }
     throw new Error(`Unsupported export format: ${opts.format}`);
   },
 };
+
+function safeExportId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'conversation';
+}
 
 async function findSessionRefs(path: string): Promise<SessionRef[]> {
   const stats = await stat(path).catch(() => null);

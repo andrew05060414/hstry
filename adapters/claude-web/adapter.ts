@@ -87,17 +87,17 @@ const adapter: Adapter = {
       };
     }
 
-    if (opts.format !== 'claude-web') {
+    if (opts.format !== 'claude-web' && opts.format !== 'claude-ai') {
       throw new Error(`Unsupported export format: ${opts.format}`);
     }
 
     const exportData = conversations.map(conv => buildClaudeWebExport(conv));
     return {
-      format: 'claude-web',
+      format: opts.format,
       content: JSON.stringify(exportData, null, opts.pretty ? 2 : 0),
       mimeType: 'application/json',
       metadata: {
-        filename: 'claude-conversations.json',
+        filename: 'conversations.json',
       },
     };
   },
@@ -393,18 +393,22 @@ function conversationsToMarkdown(conversations: Conversation[]): string {
 }
 
 function buildClaudeWebExport(conv: Conversation): Record<string, unknown> {
-  const createdAtSec = Math.floor(conv.createdAt / 1000);
-  const updatedAtSec = Math.floor((conv.updatedAt ?? conv.createdAt) / 1000);
+  const createdAt = new Date(conv.createdAt).toISOString();
+  const updatedAt = new Date(conv.updatedAt ?? conv.createdAt).toISOString();
   return {
     uuid: conv.externalId ?? `claude-${Date.now()}`,
     name: conv.title ?? 'Conversation',
-    created_at: createdAtSec,
-    updated_at: updatedAtSec,
-    chat_messages: conv.messages.map(msg => ({
-      role: msg.role,
-      content: msg.content,
-      created_at: msg.createdAt ? Math.floor(msg.createdAt / 1000) : createdAtSec,
-      model: msg.model,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    chat_messages: conv.messages.map((msg, index) => ({
+      uuid: `${conv.externalId ?? 'claude'}-message-${index + 1}`,
+      sender: msg.role === 'user' ? 'human' : 'assistant',
+      text: msg.content,
+      content: [{
+        type: 'text',
+        text: msg.content,
+      }],
+      created_at: new Date(msg.createdAt ?? conv.createdAt).toISOString(),
     })),
   };
 }

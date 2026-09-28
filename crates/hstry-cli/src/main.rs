@@ -438,7 +438,7 @@ enum Command {
 
     /// Export conversations to another format
     Export {
-        /// Target format (pi, opencode, codex, claude-code, markdown, json)
+        /// Target format (pi, opencode, codex, claude-code, claude-ai, gemini-cli, grok, markdown, json)
         #[arg(short, long)]
         format: String,
 
@@ -5240,7 +5240,13 @@ async fn cmd_export(
     use hstry_core::db::ListConversationsOptions;
     use std::fs;
 
-    // Find the adapter for the target format
+    // Find the adapter for the target format. Some export formats are
+    // compatibility aliases for an adapter that already owns the source.
+    let adapter_name = match format {
+        "claude-ai" => "claude-web",
+        _ => format,
+    };
+
     // For universal formats (markdown, json), use any available adapter
     let adapter_path = if format == "markdown" || format == "json" {
         // Try to use the first available adapter that supports export
@@ -5251,7 +5257,7 @@ async fn cmd_export(
             .ok_or_else(|| anyhow::anyhow!("No adapters available for export"))?
     } else {
         runner
-            .find_adapter(format)
+            .find_adapter(adapter_name)
             .ok_or_else(|| anyhow::anyhow!("No adapter found for format '{format}'"))?
     };
 
