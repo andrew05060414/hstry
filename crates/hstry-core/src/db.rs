@@ -52,6 +52,25 @@ pub struct Database {
     ingest_writer: Mutex<()>,
 }
 
+/// Close `pool` and wait until sqlx has really closed every connection.
+///
+/// `SqlitePool::close` can return while the task that hands the last
+/// connection back is still queued on the runtime. That task only runs at the
+/// next poll, so a caller that goes straight to a blocking file operation
+/// (`restore_checkpoint` deletes the database with a synchronous retry loop)
+/// keeps the SQLite file handle open for the whole retry window and fails with
+/// Windows os error 32. Waiting for `size() == 0` lets the task finish first.
+/// Bounded so a connection leaked elsewhere cannot turn a close into a hang.
+async fn close_pool(pool: &SqlitePool) {
+    pool.close().await;
+    for _ in 0..5_000 {
+        if pool.size() == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
 /// Normalize a source path for consistent comparison.
 /// Trims trailing slashes and handles path normalization.
 fn normalize_source_path(path: Option<&String>) -> Option<String> {
@@ -458,7 +477,7 @@ impl Database {
         let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await;
-        self.pool.close().await;
+        close_pool(&self.pool).await;
     }
 
     // =========================================================================
@@ -1151,7 +1170,7 @@ impl Database {
             .connect_with(options)
             .await?;
         let result = Self::inspect_readonly_snapshot_with(&pool).await;
-        pool.close().await;
+        close_pool(&pool).await;
         result
     }
 

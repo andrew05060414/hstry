@@ -916,6 +916,53 @@ mod tests {
         restored.close().await;
     }
 
+    /// Regression: `Database::close` must not return while sqlx still owns a
+    /// connection. `SqlitePool::close` can finish before the task that hands
+    /// the last connection back has run; on a runtime thread that then goes
+    /// straight into a blocking file operation (restore's retrying remove)
+    /// that task never runs, so the SQLite handle outlives `close` for the
+    /// whole retry window (Windows os error 32).
+    #[tokio::test]
+    async fn database_close_releases_every_connection_before_returning() {
+        use crate::models::Source;
+
+        for round in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("closed.db");
+            let db = Database::open(&db_path).await.unwrap();
+            db.upsert_source(&Source {
+                id: "cursor-close".to_string(),
+                adapter: "cursor".to_string(),
+                path: None,
+                last_sync_at: None,
+                config: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+            let conversation = serde_json::from_value(serde_json::json!({
+                "externalId": "close-me",
+                "createdAt": 1_700_000_000_000_i64,
+                "messages": [{"role": "user", "content": "hello"}],
+            }))
+            .unwrap();
+            crate::ingest::ingest_batch(&db, "cursor-close", vec![conversation])
+                .await
+                .unwrap();
+            assert_eq!(db.count_conversations().await.unwrap(), 1);
+
+            let pool = db.read_pool().clone();
+            db.close().await;
+            assert_eq!(
+                pool.size(),
+                0,
+                "round {round}: close returned while a connection was still open"
+            );
+            // No `.await` between close and removal, like `restore_checkpoint`.
+            std::fs::remove_file(&db_path)
+                .unwrap_or_else(|e| panic!("round {round}: database still locked: {e}"));
+        }
+    }
+
     #[tokio::test]
     async fn inspect_snapshot_does_not_enable_wal_while_source_stays_open() {
         use crate::models::Source;
