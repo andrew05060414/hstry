@@ -14,7 +14,7 @@ substantial copies or distributions must continue to include them.
 
 ## Fork changes
 
-The `andrew05060414/chronicle` fork contains changes made after forking,
+The `andrew05060414/hstry` fork contains changes made after forking,
 including additional adapters, source discovery, remote hub/satellite
 synchronization, resume/export integrations, backup and checkpoint workflows,
 and platform-specific fixes. These changes remain part of the fork history and

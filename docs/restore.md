@@ -26,7 +26,7 @@ $env:HSTRY_NO_SERVICE = "1"
 hstry --database "C:/path/to/archive-restore.db" search "a phrase you remember" --limit 5
 ```
 
-Or set `database = "D:/Data/hstry/archive-restore.db"` in a throwaway config. Keep the daily satellite `database = "D:/Data/hstry/staging.db"`.
+Or set `database = "<data-dir>/hstry/archive-restore.db"` in a throwaway config. Keep the daily satellite `database = "<data-dir>/hstry/staging.db"`.
 
 4. Recreate local collection: `hstry source add` the tools on this PC, `hstry sync`, then `hstry remote sync --direction push` **only staging**.
 

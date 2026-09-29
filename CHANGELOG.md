@@ -10,6 +10,11 @@ Upstream last consumed here is `v0.5.25` (`a4be7c9`). Keep fork version at `1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- The repository was renamed from `andrew05060414/chronicle` to `andrew05060414/hstry` and is now scoped to web conversation backup (browser extension plus the ingest service). The name Chronicle now refers to a separate private system and no longer to this repository.
+- The browser extension display name changed from "Chronicle 网页采集" to "hstry 网页采集".
+
 ### Added
 
 - Hub-side satellite ingest: `hstry hub ingest` merges a delta sqlite into the live hub under `{device_id}:` while holding an ingest lock. `hstry remote sync --direction push` no longer SCP-overwrites the hub file.
@@ -37,7 +42,7 @@ Upstream last consumed here is `v0.5.25` (`a4be7c9`). Keep fork version at `1.0.
 
 ## [1.0.0] - 2026-08-21
 
-Fork 1.0: local agent archive + NAS hub/satellite. Canonical remote is `andrew05060414/chronicle`.
+Fork 1.0: local agent archive + NAS hub/satellite. Canonical remote is `andrew05060414/hstry` (renamed from `andrew05060414/chronicle` on 2026-09-28).
 
 ### Added
 
