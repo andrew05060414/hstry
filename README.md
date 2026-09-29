@@ -1,16 +1,17 @@
-# Chronicle
+# hstry
 
-Chronicle is the public product name for this local-first history system. The
-implementation grew from the [byteowlz/hstry](https://github.com/byteowlz/hstry)
-engine and is maintained at [andrew05060414/chronicle](https://github.com/andrew05060414/chronicle).
+hstry is a personal fork of [byteowlz/hstry](https://github.com/byteowlz/hstry), maintained at
+[andrew05060414/hstry](https://github.com/andrew05060414/hstry) (renamed from `andrew05060414/hstry` on 2026-09-28; the old URL redirects).
 
-**Spoken / connecting-layer name: Chronicle.** Product home: [andrew05060414/chronicle](https://github.com/andrew05060414/chronicle). Commands: `chronicle` and `hstry` are the same binary. Crate names, `%APPDATA%\hstry\`, and the database path stay `hstry` so upstream merges do not explode. Upstream remains `byteowlz/hstry`.
+**Scope of this fork: web conversation backup.** The browser extension in `extension/` captures ChatGPT, Claude, Gemini, Grok and Perplexity conversations and posts them to the local ingest service (`hstry-api` / `hstry service`), which stores them and syncs them to a hub. The rest of the engine (local agent-log adapters, TUI, native file backup) is kept for now for upstream compatibility and may be trimmed later.
+
+**Naming:** *Chronicle* now names the author's wider private memory system and is not this repository. The binary is still installed as both `hstry` and `chronicle` (same executable), and crate names, `%APPDATA%\hstry\` and the database path stay `hstry` so upstream merges do not explode. Upstream remains `byteowlz/hstry`.
 
 Universal AI chat history database. Aggregates conversations from local coding agents (Cursor, Codex, Claude Code, Pi, OpenCode, QClaw, WorkBuddy, Antigravity CLI, and others) into a single searchable SQLite database. Optional NAS hub/satellite sync keeps Windows and Mac histories namespaced.
 
-Chronicle / HSTRY is the backup and archive layer for chat records. AgentsView is
+hstry is the backup and archive layer for web chat records. AgentsView is
 the primary retrieval surface for Andrew's knowledge workflow, including vector
-search; Chronicle's CLI and search API remain useful for archive verification,
+search; hstry's CLI and search API remain useful for archive verification,
 export, and recovery.
 
 Web ChatGPT / Gemini live ingest is a later milestone; takeout export adapters already exist.
@@ -37,8 +38,8 @@ This fork is installed from source. Upstream Homebrew / AUR / Scoop packages tra
 ### Cargo (this repo)
 
 ```bash
-git clone https://github.com/andrew05060414/chronicle.git
-cd chronicle
+git clone https://github.com/andrew05060414/hstry.git
+cd hstry
 cargo install --path crates/hstry-cli
 ```
 
@@ -75,8 +76,8 @@ upgrading. Remote search runs the peer's own `hstry`, so upgrade the hub too.
 ### Build from Source
 
 ```bash
-git clone https://github.com/andrew05060414/chronicle.git
-cd chronicle
+git clone https://github.com/andrew05060414/hstry.git
+cd hstry
 cargo build --release --workspace
 ```
 
@@ -225,7 +226,7 @@ match the current hstry version.
 
 ## Browser extension
 
-`extension/` contains **Chronicle 网页采集** (formerly "hstry sync"), a Chrome/Edge MV3 extension that background-syncs conversations from ChatGPT (including projects and archived chats), Claude, Gemini, Grok, and Perplexity into your local database. It POSTs new conversations to a running `hstry-api` instance (`http://127.0.0.1:3000/ingest`, token-authenticated).
+`extension/` contains **hstry 网页采集** (formerly "hstry sync" and, briefly, "Chronicle 网页采集"), a Chrome/Edge MV3 extension that background-syncs conversations from ChatGPT (including projects and archived chats), Claude, Gemini, Grok, and Perplexity into your local database. It POSTs new conversations to a running `hstry-api` instance (`http://127.0.0.1:3000/ingest`, token-authenticated).
 
 ```bash
 hstry-api --port 3000   # start the API, optionally with --token <secret>
@@ -331,7 +332,7 @@ hstry follows XDG Base Directory specifications on Unix, and the platform defaul
 Default config: `~/.config/hstry/config.toml` (Windows: `%APPDATA%\hstry\config.toml`)
 
 ```toml
-"$schema" = "https://raw.githubusercontent.com/andrew05060414/chronicle/main/examples/config.schema.json"
+"$schema" = "https://raw.githubusercontent.com/andrew05060414/hstry/main/examples/config.schema.json"
 
 database = "~/.local/share/hstry/hstry.db"
 adapter_paths = ["~/.config/hstry/adapters"]

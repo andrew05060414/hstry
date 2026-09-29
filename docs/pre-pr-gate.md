@@ -36,12 +36,12 @@ Pre-commit stays lightweight; this pre-PR gate is the hard gate.
 - Central enforcement, not just convention: pre-PR scripts and CI set
   `HSTRY_ENFORCE_TEST_DB_GUARD=1` **and** `HSTRY_TEST_BLOCKED_DB_ROOTS`
   (operator-configured `;`-separated roots; this fork's scripts default
-  to `D:/Data/hstry`). `Database::open` refuses those roots BEFORE any
+  to `<data-dir>/hstry`). `Database::open` refuses those roots BEFORE any
   directory creation or connection. The library does not compile in a
   machine-specific path. The flag alone, with an empty root list, is a
   no-op — a leaked flag cannot refuse a production archive. Tests that
   prove the guard inject a synthetic root of their own and never assert
-  that a real disk (e.g. `D:/Data`) does not exist. Per-test
+  that a real disk (e.g. `<data-dir>`) does not exist. Per-test
   `hstry_core::test_guard::assert_test_path_safe` / `isolated_temp_db`
   remain as a second layer against the same env list.
 - Only synthetic sentinel conversations/messages are seeded, in isolated
