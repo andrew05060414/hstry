@@ -1,199 +1,58 @@
 # AGENTS.md
 
-Guidance for coding agents working on Chronicle (`chronicle`, compatible name
-`hstry`): a conversation archive that indexes AI chat history from multiple
-agents and machines and serves it back for retrieval. It is not a task board and
-dispatches no work; it answers what was said and when, and every surface it
-exposes - CLI, MCP, API, TUI - exists to search, read, and sync that archive.
+> 创建日期：2026-02（继承自上游 byteowlz/hstry，2026-09-28 按本 fork 重写）
+> 最后更新：2026-09-28
+> 版本：2.0
 
-## Core Principles
+Chronicle（命令 `chronicle`，兼容名 `hstry`）是 Andrew 的对话档案：采集各 agent 和网页 AI 的聊天记录，存档、备份、多机汇总，并提供检索。它不是任务看板，也不派发工作。
 
-- **Never publish** artifacts to public registries without explicit user approval.
-- We favor clean refactors over backwards compatibility; update existing code in place (no `FooV2` suffixes).
-- Target Windows 11, Linux, and macOS 14+ with the same behavior; no legacy OS shims.
-- Keep file headers minimal—no author or timestamp banners.
+本文件是本 fork 的唯一项目规则，不再沿用上游 byteowlz 的工作流（`trx`、`byt`、`mmry`、Homebrew/AUR 发布等）。上游历史文件（如 `.trx/`）只读保留，不要创建、更新或依赖它们。
 
-## Rust Workflow
+## 职责边界（2026-09-27 分工，见 `docs/chronicle-agentsview-split.md`）
 
-- Follow Clippy best practices: collapse trivial `if`s, inline `format!` arguments, and prefer method references over redundant closures.
-- When tests compare structures, assert on the full value instead of individual fields.
-- Run `cargo fmt` after code changes and `cargo test` for the touched crate. Invoke broader test or lint commands only if the user asks.
+- **Chronicle / hstry 负责**：浏览器插件网页采集（`/ingest`）、存档正本、`chronicle backup`（3-2-1）、多机汇总到 NAS、`resume`、`export`。
+- **AgentsView 负责**：搜索、浏览界面、记忆提炼。新的检索类需求优先放到 AgentsView，不在这里重复建设。
+- 本机 agent 日志的适配器仍在跑，是否停用等 restic 原始文件备份稳定后再定。
 
-## CLI Expectations
+## 工作方式
 
-- Prefer subcommands for verbs and keep outputs quiet/verbose via standard flags (`-q`, chainable `-v`, `--debug`, `--trace`).
-- Support machine-readable modes via `--json/--yaml` and honor NO_COLOR/FORCE_COLOR.
-- Offer `--dry-run`, `--yes/--force`, `--no-progress`, `--timeout`, and `--parallel` when operations warrant them.
-- Generate help quickly (`-h/--help`) and provide shell completions off the same Clap definitions.
+- 任务追踪用 GitHub Issues（本仓库），PR 关联对应 issue。
+- `main` 有分支保护，改动走 PR；提交、push、开 PR 按 Andrew 的全局规则授权。
+- 不发布到任何公共包仓库，不创建 release tag，除非 Andrew 明确要求。
+- 倾向就地重构，不留 `FooV2` 之类的兼容壳；文件头不加作者/时间横幅。
+- 行为在 Windows 11、Linux、macOS 14+ 上保持一致；Andrew 主力机是 Windows，NAS 是 Linux。
 
-## Configuration & Storage
+## Rust
 
-- Use XDG directories when available: config at `$XDG_CONFIG_HOME/<app>/config.toml`, data at `$XDG_DATA_HOME/<app>`, state at `$XDG_STATE_HOME/<app>` with sensible fallbacks (e.g., `~/.config`).
-- Expand `~` and environment variables in config paths.
-- Ship a commented example under `examples/`, create a default config on first run, and load overrides via the `config` crate.
+- 遵循 Clippy 习惯：合并琐碎的 `if`、`format!` 内联参数、用方法引用代替多余闭包。
+- 测试比较结构体时断言整个值，不逐字段断言。
+- 改完跑 `cargo fmt` 和**被改到的 crate** 的 `cargo test`（`just test-crate <crate>`）。`just check-all`（fmt + clippy + 全量测试）只在 PR 前或 Andrew 要求时跑。
+- **Windows 上后台启动子进程必须加 `CREATE_NO_WINDOW`。** 服务本身没有控制台，漏加会让 node 适配器、ssh/scp 等每次运行都弹出终端窗口（见 #72）。新增任何 `Command::new` 都要检查这一点。
 
-## House Rules
+## CLI 约定
 
-- Do exactly what the user asks—no unsolicited files or docs.
-- Keep README updates concise, emoji-free, and only when requested.
-- Never commit secrets or sensitive paths; scrub logs before surfacing them.
+- 动词用子命令；安静/详细输出用标准参数（`-q`、可叠加的 `-v`、`--debug`、`--trace`）。
+- 支持 `--json` 等机器可读输出，遵守 `NO_COLOR` / `FORCE_COLOR`。
+- 需要时提供 `--dry-run`、`--yes/--force`、`--no-progress`、`--timeout`、`--parallel`。
+- 帮助和 shell 补全都来自同一套 Clap 定义。
 
-## Justfile Commands
+## 配置、数据与部署（本机实际路径）
 
-This project uses [just](https://github.com/casey/just) as a command runner. Run `just` to see available commands.
+- Windows 配置：`%APPDATA%\hstry\config.toml`；适配器：`%APPDATA%\hstry\adapters\`；Linux/macOS 用 `~/.config/hstry/`。操作前先确认实际配置和路径，不要假设 XDG。
+- Windows 上作为服务 `chronicle`（WinSW，LocalSystem）运行，可执行文件是 `~/.cargo/bin/chronicle.exe`。服务运行时文件被锁：升级按 README 的 "Upgrading a machine that runs the service"——停服务（需要管理员）→ `cargo install --path crates/hstry-cli --locked` → 启服务。本地 HTTP：`127.0.0.1:3000`（插件 `/ingest`）。
+- 浏览器插件从 `origin/main` 导出到固定目录：`just install-extension`（见 README "Browser extension"）。
+- 不提交密钥或敏感路径；日志给出前先脱敏。档案数据库是 Andrew 的长期记录，不要删除、重建或截断。
 
-**Core commands:**
-```bash
-just              # Show available commands
-just install-all  # Install all binaries
-just install-crate CRATE # Install specific crate
-just build        # Debug build (all crates)
-just build-release # Release build (all crates)
-just test         # Run all tests
-just fmt          # Format all code
-just clippy       # Run linter on all crates
-just check-all    # Format + lint + test
-```
+## 适配器
 
-**Workspace navigation:**
-```bash
-just list         # List all crates
-just list-bins    # List binary crates
-just list-libs    # List library crates
-just build-crate CRATE  # Build specific crate
-just test-crate CRATE   # Test specific crate
-just clippy-crate CRATE # Lint specific crate
-```
+适配器是 `adapters/<name>/adapter.ts` 下的 TypeScript 模块，由 Rust 运行时以子进程启动（Bun / Deno / Node，见 `crates/hstry-runtime/src/runner.rs`），通过 JSON 通信。
 
-**Development workflow:**
-```bash
-just check        # Fast compile check
-just fix          # Auto-fix clippy warnings
-just docs         # Generate documentation
-just update       # Update dependencies
-```
+- 改完适配器先部署再测试：Windows 用 `just update-adapters-windows`，其他平台 `just update-adapters`。CLI 从配置目录加载适配器，不读源码目录。
+- 直接测试：设置 `HSTRY_REQUEST='{"method":"detect","params":{"path":"..."}}'`（或 `parse`，可带 `"opts":{"limit":1}`）后运行已部署的 `adapter.ts`。
+- 类型契约：时间戳必须是整数毫秒（浮点秒用 `Math.floor()` 转）；Rust 侧 `ParsedConversation.created_at` 是 `i64`，浮点会反序列化失败。响应类型在 `adapters/types/index.ts`，须与 `runner.rs` 一致。
+- 可选字段 `version`、`messageCount` 只是提示，数据库的值为准，适配器不得依赖它们保证写入正确。
+- 常见错误："Could not detect format" = `detect()` 返回 null；"data did not match any variant" = 类型不符（多半是浮点时间戳）；"No conversations found" = `parse()` 返回空。
 
-Always run `just check-all` before committing significant changes.
+## Justfile
 
-## Issue Tracking (GitHub Issues)
-
-Use GitHub Issues as the canonical task and issue tracker for this fork. Link pull requests to the relevant issue and close issues through the normal GitHub workflow.
-
-`.trx/` is the inherited local issue database used by the upstream project. Its `issues.jsonl` and `events.jsonl` files contain historical task records; they are preserved for compatibility, but are not the source of truth for work in this fork. Do not create, update, close, sync, or require commits to `.trx/` for fork work.
-
-## Memory System (byt/mmry)
-
-Use `byt memory` to store and retrieve project knowledge. Memories auto-detect the current repo.
-
-**Adding memories:**
-```bash
-byt memory add "Important decision or learning"              # Auto-detects current repo
-byt memory add "Cross-repo architecture decision" --govnr    # Force govnr store
-byt memory add "Specific insight" -c "architecture" -i 8     # With category and importance
-```
-
-**Searching memories:**
-```bash
-byt memory search "query"           # Search current repo's memories
-byt memory search "query" --govnr   # Search cross-repo memories
-byt memory search "query" --all     # Search ALL projects
-```
-
-**When to add memories:**
-- Architecture decisions and their rationale
-- Non-obvious solutions to tricky problems
-- Integration patterns with other byteowlz repos
-- Performance findings or benchmarks
-- API contracts or breaking changes
-
-**When to search memories:**
-- Before starting work on a feature (check for prior decisions)
-- When encountering unfamiliar code patterns
-- When integrating with other repos (`byt memory search "query" --all`)
-
-## Adapters
-
-Adapters are TypeScript modules in `adapters/<name>/adapter.ts` that parse conversation data from various sources. They run via Bun and communicate with the Rust runtime via JSON.
-
-**Adapter deployment:**
-```bash
-just update-adapters    # Copy adapters to ~/.config/hstry/adapters
-```
-
-After modifying any adapter, always run `just update-adapters` before testing. The CLI loads adapters from the config directory, not the source tree.
-
-**Testing adapters directly:**
-```bash
-# Test detection
-HSTRY_REQUEST='{"method":"detect","params":{"path":"/path/to/file.json"}}' \
-  bun run ~/.config/hstry/adapters/<name>/adapter.ts
-
-# Test parsing (with limit)
-HSTRY_REQUEST='{"method":"parse","params":{"path":"/path/to/file.json","opts":{"limit":1}}}' \
-  bun run ~/.config/hstry/adapters/<name>/adapter.ts
-```
-
-**Type contract with Rust runtime:**
-- Timestamps must be integers (milliseconds). Use `Math.floor()` when converting from float seconds.
-- The Rust `ParsedConversation` struct uses `created_at: i64` - floats will cause deserialization errors.
-- Response types are defined in `adapters/types/index.ts` and must match `crates/hstry-runtime/src/runner.rs`.
-
-**Optional sync-hint fields (v0.5.10+):**
-- `version` (number, optional): Monotonic version counter from hstry. Read-only hint — the DB-maintained counter is authoritative and is never overwritten by adapter-supplied values.
-- `messageCount` (number, optional): Denormalized message count. Same caveat: DB is authoritative.
-- Both fields are omitted from serialized output when absent (`None`), so existing adapters that don't produce them remain fully compatible.
-- Adapters MAY include these fields for diagnostics or round-trip export/import parity, but MUST NOT rely on them for write correctness.
-
-**Common adapter issues:**
-- "Could not detect format" - The `detect()` method returned null. Check file path patterns and content detection logic.
-- "data did not match any variant" - Usually a type mismatch. Check that timestamps are integers, not floats.
-- "No conversations found" - The `parse()` method returned empty array. Check file content parsing logic.
-
-## Releases & Distribution
-
-This project uses GitHub Actions for automated releases. See `.github/workflows/release.yml`.
-
-**Creating a release:**
-```bash
-# Tag-based (automatic trigger)
-git tag v1.0.0 && git push --tags
-
-# Manual trigger via CLI
-gh workflow run release.yml -f tag=v1.0.0
-```
-
-**What the workflow builds:**
-- Linux x86_64 (ubuntu-latest)
-- macOS x86_64 (cross-compiled from macos-14 ARM64)
-- macOS ARM64 (macos-14)
-- Windows x86_64 — **CI** (`windows-latest` in `.github/workflows/ci.yml`) runs `cargo check` / `cargo test`; **release zip packaging** in `release.yml` is still a follow-up
-
-**Disabled by default (uncomment in workflow if needed):**
-- Linux ARM64: Requires `Cross.toml` with OpenSSL configuration
-- Windows release artifacts: enable `x86_64-pc-windows-msvc` in `release.yml` when Scoop/zip distribution is ready
-
-**Platform notes:**
-- `macos-13` runner is retired - always use `macos-14`
-- For protobuf projects: uncomment the protoc installation steps
-- For ML projects: uncomment `--features coreml` for Apple Silicon
-- Workspace builds package all binaries matching `hstry*`
-
-**Required secrets for package managers:**
-- `TAP_GITHUB_TOKEN` - PAT with repo access to byteowlz/homebrew-tap
-- `AUR_SSH_PRIVATE_KEY` - SSH key registered with AUR
-- `AUR_EMAIL` - Email for AUR commits
-
-Use `byt secrets setup <repo>` to configure secrets.
-
-**Installation methods (once published):**
-```bash
-# Homebrew (macOS/Linux)
-brew install byteowlz/tap/<binary-name>
-
-# AUR (Arch Linux)
-yay -S <binary-name>
-
-# Scoop (Windows)
-scoop bucket add byteowlz https://github.com/byteowlz/scoop-bucket
-scoop install <binary-name>
-```
+`just` 列出全部命令。常用：`just build`、`just test-crate <crate>`、`just clippy-crate <crate>`、`just fmt`、`just check`（快速编译检查）、`just install-all`、`just install-extension`、`just update-adapters(-windows)`。
