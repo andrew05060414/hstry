@@ -39,7 +39,7 @@ Chronicle（命令 `chronicle`，兼容名 `hstry`）是 Andrew 的对话档案�
 ## 配置、数据与部署（本机实际路径）
 
 - Windows 配置：`%APPDATA%\hstry\config.toml`；适配器：`%APPDATA%\hstry\adapters\`；Linux/macOS 用 `~/.config/hstry/`。操作前先确认实际配置和路径，不要假设 XDG。
-- Windows 上作为服务 `chronicle`（WinSW，LocalSystem）运行，可执行文件是 `~/.cargo/bin/chronicle.exe`。服务运行时文件被锁：升级按 README 的 "Upgrading a machine that runs the service"——停服务（需要管理员）→ `cargo install --path crates/hstry-cli --locked` → 启服务。本地 HTTP：`127.0.0.1:3000`（插件 `/ingest`）。
+- Windows 上作为服务 `chronicle`（WinSW，LocalSystem）运行，可执行文件是 `~/.cargo/bin/hstry.exe`（2026-09-29 起；此前是 `chronicle.exe`，该别名已移除，服务切换需管理员）。服务运行时文件被锁：升级按 README 的 "Upgrading a machine that runs the service"——停服务（需要管理员）→ `cargo install --path crates/hstry-cli --locked` → 启服务。本地 HTTP：`127.0.0.1:3000`（插件 `/ingest`）。
 - 浏览器插件从 `origin/main` 导出到固定目录：`just install-extension`（见 README "Browser extension"）。
 - 不提交密钥或敏感路径；日志给出前先脱敏。档案数据库是 Andrew 的长期记录，不要删除、重建或截断。
 
