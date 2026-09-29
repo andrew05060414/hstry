@@ -50,7 +50,7 @@ if (-not [string]::IsNullOrWhiteSpace($ChronicleExe)) {
     if ($null -ne $cmd -and $null -ne $cmd.Source) {
         $resolvedExe = $cmd.Source
     } else {
-        $resolvedExe = [System.IO.Path]::GetFullPath("chronicle.exe")
+        $resolvedExe = [System.IO.Path]::GetFullPath("hstry.exe")
     }
 }
 

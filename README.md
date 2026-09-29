@@ -5,7 +5,7 @@ hstry is a personal fork of [byteowlz/hstry](https://github.com/byteowlz/hstry),
 
 **Scope of this fork: web conversation backup.** The browser extension in `extension/` captures ChatGPT, Claude, Gemini, Grok and Perplexity conversations and posts them to the local ingest service (`hstry-api` / `hstry service`), which stores them and syncs them to a hub. The rest of the engine (local agent-log adapters, TUI, native file backup) is kept for now for upstream compatibility and may be trimmed later.
 
-**Naming:** *Chronicle* now names the author's wider private memory system and is not this repository. The binary is still installed as both `hstry` and `chronicle` (same executable), and crate names, `%APPDATA%\hstry\` and the database path stay `hstry` so upstream merges do not explode. Upstream remains `byteowlz/hstry`.
+**Naming:** *Chronicle* now names the author's wider private memory system and is not this repository. The binary is named `hstry` only (the former `chronicle` alias was removed on 2026-09-29; the `chronicle` command now belongs to the private Chronicle system), and crate names, `%APPDATA%\hstry\` and the database path stay `hstry` so upstream merges do not explode. Upstream remains `byteowlz/hstry`.
 
 Universal AI chat history database. Aggregates conversations from local coding agents (Cursor, Codex, Claude Code, Pi, OpenCode, QClaw, WorkBuddy, Antigravity CLI, and others) into a single searchable SQLite database. Optional NAS hub/satellite sync keeps Windows and Mac histories namespaced.
 
@@ -43,7 +43,7 @@ cd hstry
 cargo install --path crates/hstry-cli
 ```
 
-This installs both `hstry` and `chronicle`. They share `src/main.rs`.
+This installs the `hstry` binary.
 
 To install all binaries (CLI, TUI, MCP):
 
@@ -53,7 +53,7 @@ cargo install --path crates/hstry-tui
 cargo install --path crates/hstry-mcp
 ```
 
-`hstry-tui` also installs `chronicle-tui`. `chronicle tui` launches whichever TUI binary is on `PATH`.
+`hstry tui` launches `hstry-tui` from `PATH`.
 
 ### Upgrading a machine that runs the service
 
@@ -69,8 +69,8 @@ install, then start it again:
 
 Run `cargo install --path crates/hstry-cli --locked` between the two, and make
 sure the unit's executable path is the installed binary rather than a stale
-copy. `chronicle --version` prints the commit it was built from, for example
-`chronicle 1.0.0 (ff4d449a8 2026-09-25)`, so compare it across machines after
+copy. `hstry --version` prints the commit it was built from, for example
+`hstry 1.0.0 (ff4d449a8 2026-09-25)`, so compare it across machines after
 upgrading. Remote search runs the peer's own `hstry`, so upgrade the hub too.
 
 ### Build from Source
@@ -214,7 +214,7 @@ hstry resume --limit 10
 | `backup` | 3-2-1 backup: integrity check, NAS remote push, Oracle `scp`, Google Drive `rclone` |
 | `skills audit/list/sync/bootstrap` | Optional Andrew-Skill / ASM proxy (not a memory store) |
 | `skill install/status/update` | Install the bundled agent retrieval skill |
-| `tui` | Launch `chronicle-tui` / `hstry-tui` |
+| `tui` | Launch `hstry-tui` |
 | `service enable/disable/start/run/restart/stop/status` | Control background sync service |
 | `config show/path/edit` | Manage configuration |
 | `stats` | Show database statistics |
@@ -484,14 +484,14 @@ just clippy          # Lint only
 just update-adapters # Copy latest adapters to ~/.config/hstry/adapters
 just update-adapters-windows # Windows: copy to %APPDATA%\hstry\adapters
 ```
-## Chronicle connecting layer
+## CLI
 
-`chronicle` is the speakable name for this fork's CLI. It owns the conversation archive (`search` / `peek` / `show` / `sync` / `remote` / `checkpoint` / `backup`) and can optionally proxy skill install/audit to an external Andrew-Skill checkout.
+`hstry` is this fork's CLI. It owns the web-conversation archive (`search` / `peek` / `show` / `sync` / `remote` / `checkpoint` / `backup`) and can optionally proxy skill install/audit to an external Andrew-Skill checkout.
 
 ```bash
-chronicle search "query" --scope local
-chronicle backup --dry-run
-chronicle tui
+hstry search "query" --scope local
+hstry backup --dry-run
+hstry tui
 ```
 
 The skills commands are opt-in and are not required by the core CLI. Set
@@ -499,7 +499,7 @@ The skills commands are opt-in and are not required by the core CLI. Set
 integration also requires PowerShell and `asm` on `PATH`:
 
 ```bash
-CHRONICLE_SKILL_ROOT=/path/to/Andrew-Skill chronicle skills audit
+CHRONICLE_SKILL_ROOT=/path/to/Andrew-Skill hstry skills audit
 ```
 
 3-2-1 backup uses the **configured live database** only. Set the database path

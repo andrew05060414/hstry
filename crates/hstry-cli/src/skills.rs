@@ -127,7 +127,7 @@ fn run_asm_list() -> Result<()> {
 }
 
 pub fn run_tui() -> Result<()> {
-    for name in ["chronicle-tui", "hstry-tui"] {
+    for name in ["hstry-tui"] {
         if let Ok(path) = which(name) {
             let status = ProcessCommand::new(&path)
                 .stdin(Stdio::inherit())
@@ -141,5 +141,5 @@ pub fn run_tui() -> Result<()> {
             bail!("{name} exited with {status}");
         }
     }
-    bail!("neither chronicle-tui nor hstry-tui is on PATH; cargo install --path crates/hstry-tui");
+    bail!("hstry-tui is not on PATH; cargo install --path crates/hstry-tui");
 }

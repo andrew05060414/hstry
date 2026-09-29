@@ -653,7 +653,7 @@ enum Command {
         command: skills::SkillsCommand,
     },
 
-    /// Open the terminal UI (`chronicle-tui` / `hstry-tui`)
+    /// Open the terminal UI (`hstry-tui`)
     Tui,
 }
 
